@@ -538,7 +538,7 @@ export default function ProceduralBlackboard() {
       </div>
 
       <div className="bg-gray-800 p-3 text-center text-sm text-gray-400">
-        By Ammar Hassan
+        By Ammarsssss Hassan
       </div>
     </div>
   );

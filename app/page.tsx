@@ -22,16 +22,46 @@ export default function ProceduralBlackboard() {
   const lastTimeRef = useRef<number>(0);
   const activeGrainsRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const isPlayingSoundRef = useRef<boolean>(false);
+  const tapBufferRef = useRef<AudioBuffer | null>(null);
 
-  // Initialize Web Audio API with realistic chalk sounds
+  // Initialize Web Audio API with MP3 tap sound and procedural chalk sounds
   useEffect(() => {
     const AudioContext =
       window.AudioContext || (window as any).webkitAudioContext;
     audioContextRef.current = new AudioContext();
 
+    // Load MP3 tap sound from public folder
+    const loadTapSound = async () => {
+      try {
+        console.log("Loading tap sound from /chalk-tap.mp3...");
+        const response = await fetch("/chalk-tap.mp3");
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const arrayBuffer = await response.arrayBuffer();
+        console.log("MP3 file fetched, size:", arrayBuffer.byteLength, "bytes");
+
+        const audioBuffer =
+          await audioContextRef.current!.decodeAudioData(arrayBuffer);
+        tapBufferRef.current = audioBuffer;
+        console.log(
+          "✓ Tap sound loaded successfully! Duration:",
+          audioBuffer.duration,
+          "seconds",
+        );
+      } catch (error) {
+        console.error("Failed to load tap sound:", error);
+        console.log("Will use fallback procedural tap sound");
+      }
+    };
+
+    loadTapSound();
+
     const sampleRate = audioContextRef.current.sampleRate;
 
-    // Create realistic chalk noise (pink noise with grit)
+    // Create realistic chalk noise (pink noise with grit) for continuous drawing
     const bufferSize = sampleRate * 0.15; // 150ms grain
     const noiseBuffer = audioContextRef.current.createBuffer(
       1,
@@ -129,8 +159,44 @@ export default function ProceduralBlackboard() {
     return () => window.removeEventListener("resize", resizeCanvas);
   }, [imageLoaded]);
 
-  // Play chalk tap sound (improved version)
-  const playImpact = (speed: number = 1): void => {
+  // Play MP3 tap sound when starting to draw
+  const playTapSound = (): void => {
+    const ctx = audioContextRef.current;
+    if (!ctx) return;
+
+    if (tapBufferRef.current) {
+      // Play the loaded MP3
+      try {
+        const src = ctx.createBufferSource();
+        const gain = ctx.createGain();
+
+        src.buffer = tapBufferRef.current;
+        gain.gain.value = 0.7;
+
+        src.connect(gain);
+        gain.connect(ctx.destination);
+
+        src.start();
+        activeGrainsRef.current.add(src);
+
+        src.onended = () => {
+          activeGrainsRef.current.delete(src);
+        };
+
+        console.log("Playing MP3 tap sound");
+      } catch (error) {
+        console.error("Error playing MP3 tap sound:", error);
+        playFallbackTap();
+      }
+    } else {
+      // Fallback to procedural sound
+      console.log("MP3 not loaded, using fallback tap sound");
+      playFallbackTap();
+    }
+  };
+
+  // Fallback procedural tap sound
+  const playFallbackTap = (): void => {
     const ctx = audioContextRef.current;
     if (!ctx) return;
 
@@ -150,7 +216,7 @@ export default function ProceduralBlackboard() {
     src.buffer = buffer;
 
     bp.type = "bandpass";
-    bp.frequency.value = 1600 + speed * 900;
+    bp.frequency.value = 2000;
     bp.Q.value = 1.3;
 
     hp.type = "highpass";
@@ -183,9 +249,9 @@ export default function ProceduralBlackboard() {
 
     source.buffer = noiseBufferRef.current;
 
-    // Chalk frequency characteristics - more natural range with lower cutoff
+    // Chalk frequency characteristics
     filter.type = "highpass";
-    filter.frequency.value = 350 + Math.random() * 250; // Lower for more body
+    filter.frequency.value = 350 + Math.random() * 250;
 
     filter2.type = "lowpass";
     filter2.frequency.value = 2600 + speed * 700 + Math.random() * 500;
@@ -194,7 +260,7 @@ export default function ProceduralBlackboard() {
     // Bass boost for scratch sound
     lowShelf.type = "lowshelf";
     lowShelf.frequency.value = 300;
-    lowShelf.gain.value = 6; // +6dB bass boost
+    lowShelf.gain.value = 6;
 
     // Gentler volume
     const volume = Math.min(speed * 0.4 + 0.08, 0.35) * pressure;
@@ -234,15 +300,11 @@ export default function ProceduralBlackboard() {
     const speed = Math.min(distance / deltaTime, 2);
 
     if (isStart) {
-      // Play impact sound when starting to draw
-      playImpact(speed);
+      // Play MP3 tap sound when starting to draw
+      playTapSound();
       isPlayingSoundRef.current = true;
     } else if (distance > 0.3) {
-      // More sensitive threshold
-      // Play granular sound while moving
       const pressure = 0.7 + Math.random() * 0.3;
-
-      // Play multiple grains for faster movements
       const grainCount = Math.max(1, Math.ceil(speed * 2));
       for (let i = 0; i < grainCount; i++) {
         setTimeout(() => {
@@ -256,7 +318,6 @@ export default function ProceduralBlackboard() {
 
   const stopAudio = (): void => {
     isPlayingSoundRef.current = false;
-    // Clean up active grains
     activeGrainsRef.current.forEach((grain) => {
       try {
         grain.stop(audioContextRef.current!.currentTime + 0.05);
@@ -266,7 +327,6 @@ export default function ProceduralBlackboard() {
     });
   };
 
-  // Play lift-off sound when stopping
   const playLiftSound = (): void => {
     if (!audioContextRef.current || !noiseBufferRef.current) return;
 
@@ -292,6 +352,24 @@ export default function ProceduralBlackboard() {
     source.onended = () => {
       activeGrainsRef.current.delete(source);
     };
+  };
+
+  const isInDrawableArea = (x: number, y: number): boolean => {
+    const canvas = canvasRef.current;
+    if (!canvas) return false;
+
+    const rect = canvas.getBoundingClientRect();
+    const canvasHeight = rect.height;
+    const canvasWidth = rect.width;
+
+    const leftBorder = canvasWidth * 0.06;
+    const rightBorder = canvasWidth * 0.94;
+    const topBorder = canvasHeight * 0.035;
+    const bottomBorder = canvasHeight * 0.965;
+
+    return (
+      x >= leftBorder && x <= rightBorder && y >= topBorder && y <= bottomBorder
+    );
   };
 
   const getCoordinates = (
@@ -323,12 +401,15 @@ export default function ProceduralBlackboard() {
   ): void => {
     e.preventDefault();
 
-    // Resume audio context if suspended (browser autoplay policy)
+    const { x, y } = getCoordinates(e);
+
+    if (!isInDrawableArea(x, y)) {
+      return;
+    }
+
     if (audioContextRef.current?.state === "suspended") {
       audioContextRef.current.resume();
     }
-
-    const { x, y } = getCoordinates(e);
     const now = performance.now();
 
     setIsDrawing(true);
@@ -346,26 +427,21 @@ export default function ProceduralBlackboard() {
     ctx.beginPath();
     ctx.moveTo(x, y);
 
-    // Play impact sound immediately
     updateAudio(x, y, now, true);
 
-    // Draw initial dot immediately
     ctx.beginPath();
     ctx.arc(x, y, 1.5, 0, Math.PI * 2);
     ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
     ctx.fill();
 
-    // Start filling interval for held presses
     fillIntervalRef.current = window.setInterval(() => {
       if (!hasMoved && isDrawing) {
         const holdTime = performance.now() - now;
 
-        // Continue filling after initial dot
         if (holdTime > 100) {
           const ctx = canvas.getContext("2d");
           if (!ctx) return;
 
-          // Draw filling dots
           ctx.beginPath();
           const radius = 1 + Math.random() * 0.8;
           ctx.arc(
@@ -378,7 +454,6 @@ export default function ProceduralBlackboard() {
           ctx.fillStyle = `rgba(255, 255, 255, ${0.25 + Math.random() * 0.25})`;
           ctx.fill();
 
-          // Occasional subtle sound
           if (Math.random() > 0.7) {
             playChalkGrain(0.2, 0.4);
           }
@@ -396,30 +471,30 @@ export default function ProceduralBlackboard() {
     e.preventDefault();
 
     const { x, y } = getCoordinates(e);
+
+    if (!isInDrawableArea(x, y)) {
+      stopDrawing();
+      return;
+    }
     const timestamp = performance.now();
 
     const deltaX = x - lastPosRef.current.x;
     const deltaY = y - lastPosRef.current.y;
     const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
 
-    // Mark as moved if distance is significant
     if (distance > 2) {
       setHasMoved(true);
     }
 
-    // Only draw if there's movement
     if (distance > 0.5) {
-      // Update audio based on movement
       updateAudio(x, y, timestamp, false);
 
-      // Draw on canvas with chalk texture
       const canvas = canvasRef.current;
       if (!canvas) return;
 
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
 
-      // Main chalk stroke
       ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
       ctx.lineWidth = 3;
       ctx.lineCap = "round";
@@ -428,13 +503,13 @@ export default function ProceduralBlackboard() {
       ctx.lineTo(x, y);
       ctx.stroke();
 
-      // Add chalk dust particles for realism
       if (distance > 2) {
         const particles = Math.floor(distance / 3);
         for (let i = 0; i < particles; i++) {
           const t = i / particles;
           const px = lastPosRef.current.x + (x - lastPosRef.current.x) * t;
           const py = lastPosRef.current.y + (y - lastPosRef.current.y) * t;
+
           const offsetX = (Math.random() - 0.5) * 3;
           const offsetY = (Math.random() - 0.5) * 3;
           const size = Math.random() * 1.5;
@@ -451,14 +526,12 @@ export default function ProceduralBlackboard() {
   };
 
   const stopDrawing = (): void => {
-    // Clear fill interval
     if (fillIntervalRef.current) {
       clearInterval(fillIntervalRef.current);
       fillIntervalRef.current = null;
     }
 
     if (isDrawing) {
-      // Play lift-off sound when releasing
       playLiftSound();
       setIsDrawing(false);
     }
@@ -467,11 +540,9 @@ export default function ProceduralBlackboard() {
 
   const handleMouseLeave = (): void => {
     if (isDrawing) {
-      // Play lift-off sound when leaving canvas
       playLiftSound();
     }
 
-    // Clear fill interval
     if (fillIntervalRef.current) {
       clearInterval(fillIntervalRef.current);
       fillIntervalRef.current = null;
@@ -488,25 +559,17 @@ export default function ProceduralBlackboard() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Save the current transform
     ctx.save();
-
-    // Reset transform to clear entire canvas
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-
-    // Clear entire canvas using actual pixel dimensions
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Draw background image if loaded
     if (bgImageRef.current) {
       ctx.drawImage(bgImageRef.current, 0, 0, canvas.width, canvas.height);
     } else {
-      // Fallback to solid color
       ctx.fillStyle = "#1a2622";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
 
-    // Restore the original transform (including scale)
     ctx.restore();
   };
 
@@ -538,7 +601,7 @@ export default function ProceduralBlackboard() {
       </div>
 
       <div className="bg-gray-800 p-3 text-center text-sm text-gray-400">
-        By Ammarsssss Hassan
+        By Ammar Hassan
       </div>
     </div>
   );

@@ -9,15 +9,15 @@ interface Coordinates {
 
 export default function ProceduralBlackboard() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const bgImageRef = useRef<HTMLImageElement | null>(null);
   const [isDrawing, setIsDrawing] = useState<boolean>(false);
   const [lastDrawTime, setLastDrawTime] = useState<number>(0);
   const [hasMoved, setHasMoved] = useState<boolean>(false);
   const [pressStartTime, setPressStartTime] = useState<number>(0);
-  const bgImageRef = useRef<HTMLImageElement | null>(null);
+  const [imageLoaded, setImageLoaded] = useState<boolean>(false);
   const fillIntervalRef = useRef<number | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const noiseBufferRef = useRef<AudioBuffer | null>(null);
-  const impactBufferRef = useRef<AudioBuffer | null>(null);
   const lastPosRef = useRef<Coordinates>({ x: 0, y: 0 });
   const lastTimeRef = useRef<number>(0);
   const activeGrainsRef = useRef<Set<AudioBufferSourceNode>>(new Set());
@@ -67,57 +67,6 @@ export default function ProceduralBlackboard() {
     }
     noiseBufferRef.current = noiseBuffer;
 
-    // Create natural tap sound with bass and texture
-    const impactSize = sampleRate * 0.08; // 80ms for full sound
-    const impactBuffer = audioContextRef.current.createBuffer(
-      1,
-      impactSize,
-      sampleRate,
-    );
-    const impactData = impactBuffer.getChannelData(0);
-
-    for (let i = 0; i < impactSize; i++) {
-      const t = i / sampleRate;
-      const progress = i / impactSize;
-
-      // Multi-layered envelope for natural decay
-      const env = Math.exp(-progress * 8) * (1 - progress * 0.3);
-
-      // Deep bass thump (80-150 Hz)
-      const bassFreq = 80 + progress * 70;
-      const bass = Math.sin(2 * Math.PI * bassFreq * t);
-      const bassEnv = Math.exp(-progress * 5);
-
-      // Body/knock (250-400 Hz)
-      const bodyFreq = 250 + progress * 150;
-      const body = Math.sin(2 * Math.PI * bodyFreq * t);
-      const bodyEnv = Math.exp(-progress * 7);
-
-      // Mid click (800-1200 Hz)
-      const midFreq = 800 + progress * 400;
-      const mid = Math.sin(2 * Math.PI * midFreq * t);
-      const midEnv = Math.exp(-progress * 10);
-
-      // High texture/scratch (2000-3500 Hz)
-      const highFreq = 2000 + progress * 1500;
-      const high = Math.sin(2 * Math.PI * highFreq * t);
-      const highEnv = Math.exp(-progress * 15);
-
-      // Noise for texture
-      const noise = (Math.random() * 2 - 1) * 0.15;
-
-      // Mix all layers with proper balance
-      impactData[i] =
-        (bass * bassEnv * 0.45 + // Strong bass foundation
-          body * bodyEnv * 0.35 + // Body and warmth
-          mid * midEnv * 0.15 + // Mid click
-          high * highEnv * 0.08 + // High texture
-          noise * env * 0.12) * // Noise texture
-        env *
-        0.5;
-    }
-    impactBufferRef.current = impactBuffer;
-
     return () => {
       activeGrainsRef.current.forEach((grain) => {
         try {
@@ -133,16 +82,24 @@ export default function ProceduralBlackboard() {
     };
   }, []);
 
-  // Initialize canvas
+  // Initialize canvas and background image
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    // Load background image
     const img = new Image();
-    img.src = "/Bb.jpg.jpeg"; // place image in /public
+    img.src = "/Bb.jpg.jpeg";
     img.onload = () => {
       bgImageRef.current = img;
+      setImageLoaded(true);
       resizeCanvas();
     };
+    img.onerror = () => {
+      console.error("Failed to load background image");
+      resizeCanvas();
+    };
+
     const resizeCanvas = () => {
       const rect = canvas.getBoundingClientRect();
       canvas.width = rect.width * window.devicePixelRatio;
@@ -152,13 +109,15 @@ export default function ProceduralBlackboard() {
 
       ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
 
-      // Draw blackboard background
+      // Draw background image if loaded
       if (bgImageRef.current) {
         ctx.save();
         ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(bgImageRef.current, 0, 0, canvas.width, canvas.height);
         ctx.restore();
       } else {
+        // Fallback to solid color
         ctx.fillStyle = "#1a2622";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
       }
@@ -168,9 +127,9 @@ export default function ProceduralBlackboard() {
     window.addEventListener("resize", resizeCanvas);
 
     return () => window.removeEventListener("resize", resizeCanvas);
-  }, []);
+  }, [imageLoaded]);
 
-  // Play natural tap sound with bass
+  // Play chalk tap sound (improved version)
   const playImpact = (speed: number = 1): void => {
     const ctx = audioContextRef.current;
     if (!ctx) return;
@@ -220,26 +179,33 @@ export default function ProceduralBlackboard() {
     const gain = audioContextRef.current.createGain();
     const filter = audioContextRef.current.createBiquadFilter();
     const filter2 = audioContextRef.current.createBiquadFilter();
+    const lowShelf = audioContextRef.current.createBiquadFilter();
 
     source.buffer = noiseBufferRef.current;
 
-    // Chalk frequency characteristics - more natural range
+    // Chalk frequency characteristics - more natural range with lower cutoff
     filter.type = "highpass";
-    filter.frequency.value = 600 + Math.random() * 300;
+    filter.frequency.value = 350 + Math.random() * 250; // Lower for more body
 
     filter2.type = "lowpass";
-    filter2.frequency.value = 2500 + speed * 1000 + Math.random() * 500;
+    filter2.frequency.value = 2600 + speed * 700 + Math.random() * 500;
     filter2.Q.value = 0.7;
 
+    // Bass boost for scratch sound
+    lowShelf.type = "lowshelf";
+    lowShelf.frequency.value = 300;
+    lowShelf.gain.value = 6; // +6dB bass boost
+
     // Gentler volume
-    const volume = Math.min(speed * 0.4 + 0.08, 0.3) * pressure;
+    const volume = Math.min(speed * 0.4 + 0.08, 0.35) * pressure;
     gain.gain.value = volume;
 
     // Slight pitch variation
-    source.playbackRate.value = 0.95 + Math.random() * 0.1;
+    source.playbackRate.value = 0.9 + Math.random() * 0.15;
 
     source.connect(filter);
-    filter.connect(filter2);
+    filter.connect(lowShelf);
+    lowShelf.connect(filter2);
     filter2.connect(gain);
     gain.connect(audioContextRef.current.destination);
 
@@ -302,13 +268,13 @@ export default function ProceduralBlackboard() {
 
   // Play lift-off sound when stopping
   const playLiftSound = (): void => {
-    if (!audioContextRef.current || !impactBufferRef.current) return;
+    if (!audioContextRef.current || !noiseBufferRef.current) return;
 
     const source = audioContextRef.current.createBufferSource();
     const gain = audioContextRef.current.createGain();
     const filter = audioContextRef.current.createBiquadFilter();
 
-    source.buffer = impactBufferRef.current;
+    source.buffer = noiseBufferRef.current;
     source.playbackRate.value = 1.3;
 
     filter.type = "highpass";
@@ -531,9 +497,14 @@ export default function ProceduralBlackboard() {
     // Clear entire canvas using actual pixel dimensions
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Fill with blackboard color
-    ctx.fillStyle = "#1a2622";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    // Draw background image if loaded
+    if (bgImageRef.current) {
+      ctx.drawImage(bgImageRef.current, 0, 0, canvas.width, canvas.height);
+    } else {
+      // Fallback to solid color
+      ctx.fillStyle = "#1a2622";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
 
     // Restore the original transform (including scale)
     ctx.restore();
@@ -555,6 +526,7 @@ export default function ProceduralBlackboard() {
         <canvas
           ref={canvasRef}
           className="w-full h-full rounded-lg shadow-2xl cursor-crosshair touch-none"
+          style={{ backgroundColor: "#1a2622" }}
           onMouseDown={startDrawing}
           onMouseMove={draw}
           onMouseUp={stopDrawing}

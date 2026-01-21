@@ -13,6 +13,7 @@ export default function ProceduralBlackboard() {
   const [lastDrawTime, setLastDrawTime] = useState<number>(0);
   const [hasMoved, setHasMoved] = useState<boolean>(false);
   const [pressStartTime, setPressStartTime] = useState<number>(0);
+  const bgImageRef = useRef<HTMLImageElement | null>(null);
   const fillIntervalRef = useRef<number | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const noiseBufferRef = useRef<AudioBuffer | null>(null);
@@ -136,7 +137,12 @@ export default function ProceduralBlackboard() {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
+    const img = new Image();
+    img.src = "/Bb.jpg.jpeg"; // place image in /public
+    img.onload = () => {
+      bgImageRef.current = img;
+      resizeCanvas();
+    };
     const resizeCanvas = () => {
       const rect = canvas.getBoundingClientRect();
       canvas.width = rect.width * window.devicePixelRatio;
@@ -147,8 +153,15 @@ export default function ProceduralBlackboard() {
       ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
 
       // Draw blackboard background
-      ctx.fillStyle = "#1a2622";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (bgImageRef.current) {
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.drawImage(bgImageRef.current, 0, 0, canvas.width, canvas.height);
+        ctx.restore();
+      } else {
+        ctx.fillStyle = "#1a2622";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
     };
 
     resizeCanvas();
@@ -159,38 +172,43 @@ export default function ProceduralBlackboard() {
 
   // Play natural tap sound with bass
   const playImpact = (speed: number = 1): void => {
-    if (!audioContextRef.current || !impactBufferRef.current) return;
+    const ctx = audioContextRef.current;
+    if (!ctx) return;
 
-    const source = audioContextRef.current.createBufferSource();
-    const gain = audioContextRef.current.createGain();
-    const lowShelf = audioContextRef.current.createBiquadFilter();
-    const highPass = audioContextRef.current.createBiquadFilter();
+    const src = ctx.createBufferSource();
+    const gain = ctx.createGain();
+    const bp = ctx.createBiquadFilter();
+    const hp = ctx.createBiquadFilter();
 
-    source.buffer = impactBufferRef.current;
+    const buffer = ctx.createBuffer(1, ctx.sampleRate * 0.03, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
 
-    // Boost low frequencies for bass thump
-    lowShelf.type = "lowshelf";
-    lowShelf.frequency.value = 200;
-    lowShelf.gain.value = 6; // +6dB bass boost
+    for (let i = 0; i < data.length; i++) {
+      const env = Math.exp(-i / (data.length * 0.18));
+      data[i] = (Math.random() * 2 - 1) * env;
+    }
 
-    // Remove sub-bass rumble
-    highPass.type = "highpass";
-    highPass.frequency.value = 60;
-    highPass.Q.value = 0.7;
+    src.buffer = buffer;
 
-    // Good volume
-    gain.gain.value = 0.6 + Math.min(speed, 1) * 0.2;
+    bp.type = "bandpass";
+    bp.frequency.value = 1600 + speed * 900;
+    bp.Q.value = 1.3;
 
-    source.connect(highPass);
-    highPass.connect(lowShelf);
-    lowShelf.connect(gain);
-    gain.connect(audioContextRef.current.destination);
+    hp.type = "highpass";
+    hp.frequency.value = 700;
 
-    source.start();
-    activeGrainsRef.current.add(source);
+    gain.gain.value = 0.3;
 
-    source.onended = () => {
-      activeGrainsRef.current.delete(source);
+    src.connect(hp);
+    hp.connect(bp);
+    bp.connect(gain);
+    gain.connect(ctx.destination);
+
+    src.start();
+    activeGrainsRef.current.add(src);
+
+    src.onended = () => {
+      activeGrainsRef.current.delete(src);
     };
   };
 
@@ -537,7 +555,6 @@ export default function ProceduralBlackboard() {
         <canvas
           ref={canvasRef}
           className="w-full h-full rounded-lg shadow-2xl cursor-crosshair touch-none"
-          style={{ backgroundColor: "#1a2622" }}
           onMouseDown={startDrawing}
           onMouseMove={draw}
           onMouseUp={stopDrawing}

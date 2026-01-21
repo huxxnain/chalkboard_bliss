@@ -10,57 +10,122 @@ interface Coordinates {
 export default function ProceduralBlackboard() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [isDrawing, setIsDrawing] = useState<boolean>(false);
+  const [lastDrawTime, setLastDrawTime] = useState<number>(0);
+  const [hasMoved, setHasMoved] = useState<boolean>(false);
+  const [pressStartTime, setPressStartTime] = useState<number>(0);
+  const fillIntervalRef = useRef<number | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const noiseNodeRef = useRef<AudioBufferSourceNode | null>(null);
-  const filterNodeRef = useRef<BiquadFilterNode | null>(null);
-  const gainNodeRef = useRef<GainNode | null>(null);
+  const noiseBufferRef = useRef<AudioBuffer | null>(null);
+  const impactBufferRef = useRef<AudioBuffer | null>(null);
   const lastPosRef = useRef<Coordinates>({ x: 0, y: 0 });
   const lastTimeRef = useRef<number>(0);
-  const animationFrameRef = useRef<number | null>(null);
+  const activeGrainsRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const isPlayingSoundRef = useRef<boolean>(false);
 
-  // Initialize Web Audio API
-
+  // Initialize Web Audio API with realistic chalk sounds
   useEffect(() => {
     const AudioContext =
       window.AudioContext || (window as any).webkitAudioContext;
     audioContextRef.current = new AudioContext();
 
-    // Create noise buffer (white noise)
-    const bufferSize = audioContextRef.current.sampleRate * 2;
+    const sampleRate = audioContextRef.current.sampleRate;
+
+    // Create realistic chalk noise (pink noise with grit)
+    const bufferSize = sampleRate * 0.15; // 150ms grain
     const noiseBuffer = audioContextRef.current.createBuffer(
       1,
       bufferSize,
-      audioContextRef.current.sampleRate,
+      sampleRate,
     );
     const output = noiseBuffer.getChannelData(0);
+
+    // Smoother pink noise for natural chalk texture
+    let b0 = 0,
+      b1 = 0,
+      b2 = 0,
+      b3 = 0,
+      b4 = 0,
+      b5 = 0,
+      b6 = 0;
     for (let i = 0; i < bufferSize; i++) {
-      output[i] = Math.random() * 2 - 1;
+      const white = Math.random() * 2 - 1;
+      b0 = 0.99886 * b0 + white * 0.0555179;
+      b1 = 0.99332 * b1 + white * 0.0750759;
+      b2 = 0.969 * b2 + white * 0.153852;
+      b3 = 0.8665 * b3 + white * 0.3104856;
+      b4 = 0.55 * b4 + white * 0.5329522;
+      b5 = -0.7616 * b5 - white * 0.016898;
+      const pink = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362;
+      b6 = white * 0.115926;
+
+      // Smoother envelope
+      const t = i / bufferSize;
+      const env = Math.sin(t * Math.PI) * 0.8;
+      const grit = Math.random() > 0.85 ? Math.random() * 0.15 : 0;
+      output[i] = (pink * 0.06 + grit) * env;
     }
+    noiseBufferRef.current = noiseBuffer;
 
-    // Create audio nodes
-    noiseNodeRef.current = audioContextRef.current.createBufferSource();
-    noiseNodeRef.current.buffer = noiseBuffer;
-    noiseNodeRef.current.loop = true;
+    // Create natural tap sound with bass and texture
+    const impactSize = sampleRate * 0.08; // 80ms for full sound
+    const impactBuffer = audioContextRef.current.createBuffer(
+      1,
+      impactSize,
+      sampleRate,
+    );
+    const impactData = impactBuffer.getChannelData(0);
 
-    // Band-pass filter for chalk frequency range (1-3 kHz)
-    filterNodeRef.current = audioContextRef.current.createBiquadFilter();
-    filterNodeRef.current.type = "bandpass";
-    filterNodeRef.current.frequency.value = 2000;
-    filterNodeRef.current.Q.value = 1.5;
+    for (let i = 0; i < impactSize; i++) {
+      const t = i / sampleRate;
+      const progress = i / impactSize;
 
-    // Gain node for volume control
-    gainNodeRef.current = audioContextRef.current.createGain();
-    gainNodeRef.current.gain.value = 0;
+      // Multi-layered envelope for natural decay
+      const env = Math.exp(-progress * 8) * (1 - progress * 0.3);
 
-    // Connect audio graph
-    noiseNodeRef.current.connect(filterNodeRef.current);
-    filterNodeRef.current.connect(gainNodeRef.current);
-    gainNodeRef.current.connect(audioContextRef.current.destination);
+      // Deep bass thump (80-150 Hz)
+      const bassFreq = 80 + progress * 70;
+      const bass = Math.sin(2 * Math.PI * bassFreq * t);
+      const bassEnv = Math.exp(-progress * 5);
 
-    // Start noise node
-    noiseNodeRef.current.start();
+      // Body/knock (250-400 Hz)
+      const bodyFreq = 250 + progress * 150;
+      const body = Math.sin(2 * Math.PI * bodyFreq * t);
+      const bodyEnv = Math.exp(-progress * 7);
+
+      // Mid click (800-1200 Hz)
+      const midFreq = 800 + progress * 400;
+      const mid = Math.sin(2 * Math.PI * midFreq * t);
+      const midEnv = Math.exp(-progress * 10);
+
+      // High texture/scratch (2000-3500 Hz)
+      const highFreq = 2000 + progress * 1500;
+      const high = Math.sin(2 * Math.PI * highFreq * t);
+      const highEnv = Math.exp(-progress * 15);
+
+      // Noise for texture
+      const noise = (Math.random() * 2 - 1) * 0.15;
+
+      // Mix all layers with proper balance
+      impactData[i] =
+        (bass * bassEnv * 0.45 + // Strong bass foundation
+          body * bodyEnv * 0.35 + // Body and warmth
+          mid * midEnv * 0.15 + // Mid click
+          high * highEnv * 0.08 + // High texture
+          noise * env * 0.12) * // Noise texture
+        env *
+        0.5;
+    }
+    impactBufferRef.current = impactBuffer;
 
     return () => {
+      activeGrainsRef.current.forEach((grain) => {
+        try {
+          grain.stop();
+        } catch (e) {
+          /* ignore */
+        }
+      });
+      activeGrainsRef.current.clear();
       if (audioContextRef.current) {
         audioContextRef.current.close();
       }
@@ -92,57 +157,157 @@ export default function ProceduralBlackboard() {
     return () => window.removeEventListener("resize", resizeCanvas);
   }, []);
 
-  // Calculate speed and update audio parameters
-  const updateAudio = (x: number, y: number, timestamp: number): void => {
-    if (
-      !audioContextRef.current ||
-      !gainNodeRef.current ||
-      !filterNodeRef.current
-    )
-      return;
+  // Play natural tap sound with bass
+  const playImpact = (speed: number = 1): void => {
+    if (!audioContextRef.current || !impactBufferRef.current) return;
+
+    const source = audioContextRef.current.createBufferSource();
+    const gain = audioContextRef.current.createGain();
+    const lowShelf = audioContextRef.current.createBiquadFilter();
+    const highPass = audioContextRef.current.createBiquadFilter();
+
+    source.buffer = impactBufferRef.current;
+
+    // Boost low frequencies for bass thump
+    lowShelf.type = "lowshelf";
+    lowShelf.frequency.value = 200;
+    lowShelf.gain.value = 6; // +6dB bass boost
+
+    // Remove sub-bass rumble
+    highPass.type = "highpass";
+    highPass.frequency.value = 60;
+    highPass.Q.value = 0.7;
+
+    // Good volume
+    gain.gain.value = 0.6 + Math.min(speed, 1) * 0.2;
+
+    source.connect(highPass);
+    highPass.connect(lowShelf);
+    lowShelf.connect(gain);
+    gain.connect(audioContextRef.current.destination);
+
+    source.start();
+    activeGrainsRef.current.add(source);
+
+    source.onended = () => {
+      activeGrainsRef.current.delete(source);
+    };
+  };
+
+  // Play granular chalk sound (for continuous drawing)
+  const playChalkGrain = (speed: number, pressure: number): void => {
+    if (!audioContextRef.current || !noiseBufferRef.current) return;
+
+    const source = audioContextRef.current.createBufferSource();
+    const gain = audioContextRef.current.createGain();
+    const filter = audioContextRef.current.createBiquadFilter();
+    const filter2 = audioContextRef.current.createBiquadFilter();
+
+    source.buffer = noiseBufferRef.current;
+
+    // Chalk frequency characteristics - more natural range
+    filter.type = "highpass";
+    filter.frequency.value = 600 + Math.random() * 300;
+
+    filter2.type = "lowpass";
+    filter2.frequency.value = 2500 + speed * 1000 + Math.random() * 500;
+    filter2.Q.value = 0.7;
+
+    // Gentler volume
+    const volume = Math.min(speed * 0.4 + 0.08, 0.3) * pressure;
+    gain.gain.value = volume;
+
+    // Slight pitch variation
+    source.playbackRate.value = 0.95 + Math.random() * 0.1;
+
+    source.connect(filter);
+    filter.connect(filter2);
+    filter2.connect(gain);
+    gain.connect(audioContextRef.current.destination);
+
+    source.start();
+    activeGrainsRef.current.add(source);
+
+    source.onended = () => {
+      activeGrainsRef.current.delete(source);
+    };
+  };
+
+  // Calculate speed and trigger appropriate sounds
+  const updateAudio = (
+    x: number,
+    y: number,
+    timestamp: number,
+    isStart: boolean = false,
+  ): void => {
+    if (!audioContextRef.current) return;
 
     const deltaX = x - lastPosRef.current.x;
     const deltaY = y - lastPosRef.current.y;
     const deltaTime = timestamp - lastTimeRef.current || 16;
 
     const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-    const speed = distance / deltaTime;
+    const speed = Math.min(distance / deltaTime, 2);
 
-    // Map speed to gain (0-0.15 for subtle chalk sound)
-    const targetGain = Math.min(speed * 3, 0.15);
+    if (isStart) {
+      // Play impact sound when starting to draw
+      playImpact(speed);
+      isPlayingSoundRef.current = true;
+    } else if (distance > 0.3) {
+      // More sensitive threshold
+      // Play granular sound while moving
+      const pressure = 0.7 + Math.random() * 0.3;
 
-    // Map speed to filter frequency (faster = higher pitch)
-    const targetFreq = 1500 + Math.min(speed * 800, 1500);
-
-    // Add slight randomness for texture variation
-    const randomFactor = 0.9 + Math.random() * 0.2;
-
-    // Smooth parameter changes
-    const now = audioContextRef.current.currentTime;
-    gainNodeRef.current.gain.linearRampToValueAtTime(
-      targetGain * randomFactor,
-      now + 0.01,
-    );
-    filterNodeRef.current.frequency.linearRampToValueAtTime(
-      targetFreq * randomFactor,
-      now + 0.01,
-    );
-
-    const directionChange = Math.abs(Math.atan2(deltaY, deltaX));
-    filterNodeRef.current.Q.linearRampToValueAtTime(
-      1.2 + directionChange * 0.5,
-      now + 0.01,
-    );
+      // Play multiple grains for faster movements
+      const grainCount = Math.max(1, Math.ceil(speed * 2));
+      for (let i = 0; i < grainCount; i++) {
+        setTimeout(() => {
+          if (isPlayingSoundRef.current) {
+            playChalkGrain(speed, pressure);
+          }
+        }, i * 15);
+      }
+    }
   };
 
   const stopAudio = (): void => {
-    if (!audioContextRef.current || !gainNodeRef.current) return;
+    isPlayingSoundRef.current = false;
+    // Clean up active grains
+    activeGrainsRef.current.forEach((grain) => {
+      try {
+        grain.stop(audioContextRef.current!.currentTime + 0.05);
+      } catch (e) {
+        // Ignore if already stopped
+      }
+    });
+  };
 
-    const now = audioContextRef.current.currentTime;
-    gainNodeRef.current.gain.linearRampToValueAtTime(0, now + 0.05);
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-    }
+  // Play lift-off sound when stopping
+  const playLiftSound = (): void => {
+    if (!audioContextRef.current || !impactBufferRef.current) return;
+
+    const source = audioContextRef.current.createBufferSource();
+    const gain = audioContextRef.current.createGain();
+    const filter = audioContextRef.current.createBiquadFilter();
+
+    source.buffer = impactBufferRef.current;
+    source.playbackRate.value = 1.3;
+
+    filter.type = "highpass";
+    filter.frequency.value = 500;
+
+    gain.gain.value = 0.15;
+
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(audioContextRef.current.destination);
+
+    source.start();
+    activeGrainsRef.current.add(source);
+
+    source.onended = () => {
+      activeGrainsRef.current.delete(source);
+    };
   };
 
   const getCoordinates = (
@@ -180,9 +345,13 @@ export default function ProceduralBlackboard() {
     }
 
     const { x, y } = getCoordinates(e);
+    const now = performance.now();
+
     setIsDrawing(true);
+    setHasMoved(false);
+    setPressStartTime(now);
     lastPosRef.current = { x, y };
-    lastTimeRef.current = performance.now();
+    lastTimeRef.current = now;
 
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -192,6 +361,46 @@ export default function ProceduralBlackboard() {
 
     ctx.beginPath();
     ctx.moveTo(x, y);
+
+    // Play impact sound immediately
+    updateAudio(x, y, now, true);
+
+    // Draw initial dot immediately
+    ctx.beginPath();
+    ctx.arc(x, y, 1.5, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
+    ctx.fill();
+
+    // Start filling interval for held presses
+    fillIntervalRef.current = window.setInterval(() => {
+      if (!hasMoved && isDrawing) {
+        const holdTime = performance.now() - now;
+
+        // Continue filling after initial dot
+        if (holdTime > 100) {
+          const ctx = canvas.getContext("2d");
+          if (!ctx) return;
+
+          // Draw filling dots
+          ctx.beginPath();
+          const radius = 1 + Math.random() * 0.8;
+          ctx.arc(
+            x + (Math.random() - 0.5) * 3,
+            y + (Math.random() - 0.5) * 3,
+            radius,
+            0,
+            Math.PI * 2,
+          );
+          ctx.fillStyle = `rgba(255, 255, 255, ${0.25 + Math.random() * 0.25})`;
+          ctx.fill();
+
+          // Occasional subtle sound
+          if (Math.random() > 0.7) {
+            playChalkGrain(0.2, 0.4);
+          }
+        }
+      }
+    }, 100);
   };
 
   const draw = (
@@ -205,29 +414,85 @@ export default function ProceduralBlackboard() {
     const { x, y } = getCoordinates(e);
     const timestamp = performance.now();
 
-    // Update audio based on movement
-    updateAudio(x, y, timestamp);
+    const deltaX = x - lastPosRef.current.x;
+    const deltaY = y - lastPosRef.current.y;
+    const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
 
-    // Draw on canvas
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    // Mark as moved if distance is significant
+    if (distance > 2) {
+      setHasMoved(true);
+    }
 
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    // Only draw if there's movement
+    if (distance > 0.5) {
+      // Update audio based on movement
+      updateAudio(x, y, timestamp, false);
 
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
-    ctx.lineWidth = 3;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
+      // Draw on canvas with chalk texture
+      const canvas = canvasRef.current;
+      if (!canvas) return;
 
-    ctx.lineTo(x, y);
-    ctx.stroke();
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
 
-    lastPosRef.current = { x, y };
-    lastTimeRef.current = timestamp;
+      // Main chalk stroke
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+      ctx.lineWidth = 3;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+
+      ctx.lineTo(x, y);
+      ctx.stroke();
+
+      // Add chalk dust particles for realism
+      if (distance > 2) {
+        const particles = Math.floor(distance / 3);
+        for (let i = 0; i < particles; i++) {
+          const t = i / particles;
+          const px = lastPosRef.current.x + (x - lastPosRef.current.x) * t;
+          const py = lastPosRef.current.y + (y - lastPosRef.current.y) * t;
+          const offsetX = (Math.random() - 0.5) * 3;
+          const offsetY = (Math.random() - 0.5) * 3;
+          const size = Math.random() * 1.5;
+
+          ctx.fillStyle = `rgba(255, 255, 255, ${Math.random() * 0.3})`;
+          ctx.fillRect(px + offsetX, py + offsetY, size, size);
+        }
+      }
+
+      lastPosRef.current = { x, y };
+      lastTimeRef.current = timestamp;
+      setLastDrawTime(timestamp);
+    }
   };
 
   const stopDrawing = (): void => {
+    // Clear fill interval
+    if (fillIntervalRef.current) {
+      clearInterval(fillIntervalRef.current);
+      fillIntervalRef.current = null;
+    }
+
+    if (isDrawing) {
+      // Play lift-off sound when releasing
+      playLiftSound();
+      setIsDrawing(false);
+    }
+    stopAudio();
+  };
+
+  const handleMouseLeave = (): void => {
+    if (isDrawing) {
+      // Play lift-off sound when leaving canvas
+      playLiftSound();
+    }
+
+    // Clear fill interval
+    if (fillIntervalRef.current) {
+      clearInterval(fillIntervalRef.current);
+      fillIntervalRef.current = null;
+    }
+
     setIsDrawing(false);
     stopAudio();
   };
@@ -239,8 +504,21 @@ export default function ProceduralBlackboard() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    // Save the current transform
+    ctx.save();
+
+    // Reset transform to clear entire canvas
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+    // Clear entire canvas using actual pixel dimensions
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Fill with blackboard color
     ctx.fillStyle = "#1a2622";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Restore the original transform (including scale)
+    ctx.restore();
   };
 
   return (
@@ -263,7 +541,7 @@ export default function ProceduralBlackboard() {
           onMouseDown={startDrawing}
           onMouseMove={draw}
           onMouseUp={stopDrawing}
-          onMouseLeave={stopDrawing}
+          onMouseLeave={handleMouseLeave}
           onTouchStart={startDrawing}
           onTouchMove={draw}
           onTouchEnd={stopDrawing}

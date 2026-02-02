@@ -30,10 +30,12 @@ export default function ChalkboardBliss() {
 
   const lastPosRef = useRef<Coordinates>({ x: 0, y: 0 });
   const lastTimeRef = useRef<number>(0);
-
+  const hasStartedSoundRef = useRef(false);
+  const hasPlayedTapRef = useRef(false);
   // Load all chalk .wav files from public folder
   useEffect(() => {
-    const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+    const AudioContext =
+      window.AudioContext || (window as any).webkitAudioContext;
     const ctx = new AudioContext();
     audioContextRef.current = ctx;
 
@@ -69,7 +71,9 @@ export default function ChalkboardBliss() {
           tap: !!tap,
         });
       } else {
-        console.log("No chalk .wav files found. Add chalk-draw.wav to /public folder.");
+        console.log(
+          "No chalk .wav files found. Add chalk-draw.wav to /public folder.",
+        );
         createFallbackSound(ctx);
       }
     };
@@ -90,7 +94,13 @@ export default function ChalkboardBliss() {
     const data = buffer.getChannelData(0);
 
     // Pink noise
-    let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+    let b0 = 0,
+      b1 = 0,
+      b2 = 0,
+      b3 = 0,
+      b4 = 0,
+      b5 = 0,
+      b6 = 0;
     for (let i = 0; i < bufferSize; i++) {
       const white = Math.random() * 2 - 1;
       b0 = 0.99886 * b0 + white * 0.0555179;
@@ -103,7 +113,12 @@ export default function ChalkboardBliss() {
       b6 = white * 0.115926;
       data[i] = pink * 0.04;
     }
-    chalkBuffersRef.current = { draw: buffer, slow: buffer, fast: buffer, tap: null };
+    chalkBuffersRef.current = {
+      draw: buffer,
+      slow: buffer,
+      fast: buffer,
+      tap: null,
+    };
     setAudioReady(true);
   };
 
@@ -167,35 +182,20 @@ export default function ChalkboardBliss() {
   };
 
   // Start playing chalk drawing sound
-  const startSound = (): void => {
+  const startSound = () => {
     const ctx = audioContextRef.current;
-    const { draw, slow, fast } = chalkBuffersRef.current;
-    const buffer = draw || slow || fast;
+    const buffer = chalkBuffersRef.current.draw;
     if (!ctx || !buffer || activeSourceRef.current) return;
 
-    if (ctx.state === "suspended") {
-      ctx.resume();
-    }
-
-    // Play tap sound first
-    playTapSound();
-
-    // Use short segment for looping
-    const maxLoopDuration = 10;
-    const loopDuration = Math.min(buffer.duration, maxLoopDuration);
-    const maxStart = Math.max(0, buffer.duration - loopDuration);
-    const startOffset = Math.random() * maxStart;
+    if (ctx.state === "suspended") ctx.resume();
 
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.loop = true;
-    source.loopStart = startOffset;
-    source.loopEnd = startOffset + loopDuration;
 
     const filter = ctx.createBiquadFilter();
     filter.type = "lowpass";
-    filter.frequency.value = 4000;
-    filter.Q.value = 0.5;
+    filter.frequency.value = 3000;
 
     const gain = ctx.createGain();
     gain.gain.value = 0;
@@ -204,13 +204,12 @@ export default function ChalkboardBliss() {
     filter.connect(gain);
     gain.connect(ctx.destination);
 
-    source.start(0, startOffset);
+    source.start();
+    gain.gain.setTargetAtTime(0.5, ctx.currentTime, 0.03);
 
     activeSourceRef.current = source;
-    filterNodeRef.current = filter;
     gainNodeRef.current = gain;
-
-    gain.gain.setTargetAtTime(0.5, ctx.currentTime, 0.03);
+    filterNodeRef.current = filter;
   };
 
   // Update sound based on drawing speed
@@ -229,7 +228,11 @@ export default function ChalkboardBliss() {
     const playbackRate = 0.9 + Math.min(speed * 0.2, 0.4);
     source.playbackRate.setTargetAtTime(playbackRate, ctx.currentTime, 0.05);
 
-    filter.frequency.setTargetAtTime(2000 + Math.min(speed * 2500, 4000), ctx.currentTime, 0.05);
+    filter.frequency.setTargetAtTime(
+      2000 + Math.min(speed * 2500, 4000),
+      ctx.currentTime,
+      0.05,
+    );
   };
 
   // Stop sound with fade out
@@ -244,11 +247,15 @@ export default function ChalkboardBliss() {
 
     setTimeout(() => {
       if (source) {
-        try { source.stop(); } catch (e) {}
+        try {
+          source.stop();
+          source.disconnect();
+        } catch (e) {}
       }
       activeSourceRef.current = null;
       gainNodeRef.current = null;
       filterNodeRef.current = null;
+      hasStartedSoundRef.current = false;
     }, 100);
   };
 
@@ -262,11 +269,15 @@ export default function ChalkboardBliss() {
     const topBorder = rect.height * 0.035;
     const bottomBorder = rect.height * 0.965;
 
-    return x >= leftBorder && x <= rightBorder && y >= topBorder && y <= bottomBorder;
+    return (
+      x >= leftBorder && x <= rightBorder && y >= topBorder && y <= bottomBorder
+    );
   };
 
   const getCoordinates = (
-    e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>
+    e:
+      | React.MouseEvent<HTMLCanvasElement>
+      | React.TouchEvent<HTMLCanvasElement>,
   ): Coordinates => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
@@ -286,7 +297,9 @@ export default function ChalkboardBliss() {
   };
 
   const startDrawing = (
-    e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>
+    e:
+      | React.MouseEvent<HTMLCanvasElement>
+      | React.TouchEvent<HTMLCanvasElement>,
   ): void => {
     e.preventDefault();
 
@@ -302,7 +315,8 @@ export default function ChalkboardBliss() {
 
     const canvas = canvasRef.current;
     if (!canvas) return;
-
+    hasStartedSoundRef.current = false;
+    hasPlayedTapRef.current = false;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
@@ -310,7 +324,8 @@ export default function ChalkboardBliss() {
     ctx.moveTo(x, y);
 
     // Start sound immediately
-    startSound();
+    playTapSound();
+    hasPlayedTapRef.current = true;
 
     // Draw initial dot
     ctx.beginPath();
@@ -333,7 +348,7 @@ export default function ChalkboardBliss() {
             y + (Math.random() - 0.5) * 3,
             radius,
             0,
-            Math.PI * 2
+            Math.PI * 2,
           );
           ctx.fillStyle = `rgba(255, 255, 255, ${0.25 + Math.random() * 0.25})`;
           ctx.fill();
@@ -343,7 +358,9 @@ export default function ChalkboardBliss() {
   };
 
   const draw = (
-    e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>
+    e:
+      | React.MouseEvent<HTMLCanvasElement>
+      | React.TouchEvent<HTMLCanvasElement>,
   ): void => {
     if (!isDrawing) return;
     e.preventDefault();
@@ -367,6 +384,11 @@ export default function ChalkboardBliss() {
     }
 
     if (distance > 0.5) {
+      if (!hasStartedSoundRef.current) {
+        startSound(); // ONE TIME
+        hasStartedSoundRef.current = true;
+      }
+
       // Update sound parameters based on speed
       updateSound(speed);
 
@@ -470,13 +492,10 @@ export default function ChalkboardBliss() {
           ref={canvasRef}
           className="w-full h-full rounded-lg shadow-2xl cursor-crosshair touch-none"
           style={{ backgroundColor: "#1a2622" }}
-          onMouseDown={startDrawing}
-          onMouseMove={draw}
-          onMouseUp={stopDrawing}
-          onMouseLeave={handleMouseLeave}
-          onTouchStart={startDrawing}
-          onTouchMove={draw}
-          onTouchEnd={stopDrawing}
+          onPointerDown={startDrawing}
+          onPointerMove={draw}
+          onPointerUp={stopDrawing}
+          onPointerLeave={stopDrawing}
         />
       </div>
 

@@ -32,6 +32,8 @@ export default function ChalkboardBliss() {
   const lastTimeRef = useRef<number>(0);
   const hasStartedSoundRef = useRef(false);
   const hasPlayedTapRef = useRef(false);
+  const stillnessTimerRef = useRef<number | null>(null);
+
   // Load all chalk .wav files from public folder
   useEffect(() => {
     const AudioContext =
@@ -259,6 +261,26 @@ export default function ChalkboardBliss() {
     }, 100);
   };
 
+  // Clear the stillness timer
+  const clearStillnessTimer = (): void => {
+    if (stillnessTimerRef.current) {
+      clearTimeout(stillnessTimerRef.current);
+      stillnessTimerRef.current = null;
+    }
+  };
+
+  // Start a timer to detect when drawing has stopped
+  const resetStillnessTimer = (): void => {
+    clearStillnessTimer();
+
+    // If we're drawing and sound has started, set a timer to stop sound after 150ms of no movement
+    if (isDrawing && hasStartedSoundRef.current) {
+      stillnessTimerRef.current = window.setTimeout(() => {
+        stopSound();
+      }, 150);
+    }
+  };
+
   const isInDrawableArea = (x: number, y: number): boolean => {
     const canvas = canvasRef.current;
     if (!canvas) return false;
@@ -384,6 +406,9 @@ export default function ChalkboardBliss() {
     }
 
     if (distance > 0.5) {
+      // Clear any existing stillness timer since we're moving
+      clearStillnessTimer();
+
       if (!hasStartedSoundRef.current) {
         startSound(); // ONE TIME
         hasStartedSoundRef.current = true;
@@ -425,10 +450,15 @@ export default function ChalkboardBliss() {
 
       lastPosRef.current = { x, y };
       lastTimeRef.current = timestamp;
+
+      // Start a new stillness timer
+      resetStillnessTimer();
     }
   };
 
   const stopDrawing = (): void => {
+    clearStillnessTimer();
+
     if (fillIntervalRef.current) {
       clearInterval(fillIntervalRef.current);
       fillIntervalRef.current = null;
@@ -441,6 +471,8 @@ export default function ChalkboardBliss() {
   };
 
   const handleMouseLeave = (): void => {
+    clearStillnessTimer();
+
     if (fillIntervalRef.current) {
       clearInterval(fillIntervalRef.current);
       fillIntervalRef.current = null;

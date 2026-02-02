@@ -15,7 +15,9 @@ export default function ChalkboardBliss() {
   const [imageLoaded, setImageLoaded] = useState<boolean>(false);
   const [audioReady, setAudioReady] = useState<boolean>(false);
   const fillIntervalRef = useRef<number | null>(null);
-
+  const lastAngleRef = useRef<number | null>(null);
+  const straightScoreRef = useRef<number>(0);
+  const usingStraightRef = useRef<boolean>(false);
   // Audio refs
   const audioContextRef = useRef<AudioContext | null>(null);
   const chalkBuffersRef = useRef<{
@@ -23,7 +25,14 @@ export default function ChalkboardBliss() {
     slow: AudioBuffer | null;
     fast: AudioBuffer | null;
     tap: AudioBuffer | null;
-  }>({ draw: null, slow: null, fast: null, tap: null });
+    straight: AudioBuffer | null;
+  }>({
+    draw: null,
+    slow: null,
+    fast: null,
+    tap: null,
+    straight: null,
+  });
   const activeSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
   const filterNodeRef = useRef<BiquadFilterNode | null>(null);
@@ -56,14 +65,15 @@ export default function ChalkboardBliss() {
     };
 
     const loadChalkSounds = async () => {
-      const [draw, slow, fast, tap] = await Promise.all([
+      const [draw, slow, fast, tap, straight] = await Promise.all([
         loadWavFile("/chalk-draw.wav"),
         loadWavFile("/chalk-slow.wav"),
         loadWavFile("/chalk-fast.wav"),
         loadWavFile("/chalk-tap.wav"),
+        loadWavFile("/chalk-straight.wav"),
       ]);
 
-      chalkBuffersRef.current = { draw, slow, fast, tap };
+      chalkBuffersRef.current = { draw, slow, fast, tap, straight };
 
       if (draw || slow || fast) {
         setAudioReady(true);
@@ -338,6 +348,9 @@ export default function ChalkboardBliss() {
 
     setIsDrawing(true);
     setHasMoved(false);
+    lastAngleRef.current = null;
+    straightScoreRef.current = 0;
+    usingStraightRef.current = false;
     lastPosRef.current = { x, y };
     lastTimeRef.current = now;
 
@@ -425,7 +438,29 @@ export default function ChalkboardBliss() {
 
       // Update sound parameters based on speed - now happens every frame for better sync
       updateSound(speed);
+      const angle = Math.atan2(deltaY, deltaX);
 
+      if (lastAngleRef.current !== null) {
+        const diff = Math.abs(angle - lastAngleRef.current);
+        if (diff < 0.12) {
+          straightScoreRef.current++;
+        } else {
+          straightScoreRef.current = 0;
+        }
+      }
+
+      lastAngleRef.current = angle;
+
+      const shouldUseStraight = straightScoreRef.current > 8;
+
+      if (shouldUseStraight !== usingStraightRef.current) {
+        restartSoundWithBuffer(
+          shouldUseStraight
+            ? chalkBuffersRef.current.straight
+            : chalkBuffersRef.current.draw,
+        );
+        usingStraightRef.current = shouldUseStraight;
+      }
       const canvas = canvasRef.current;
       if (!canvas) return;
 
@@ -476,6 +511,10 @@ export default function ChalkboardBliss() {
     if (isDrawing) {
       setIsDrawing(false);
     }
+    lastAngleRef.current = null;
+    straightScoreRef.current = 0;
+    usingStraightRef.current = false;
+    hasStartedSoundRef.current = false;
     stopSound();
   };
 
@@ -509,6 +548,48 @@ export default function ChalkboardBliss() {
     }
 
     ctx.restore();
+  };
+  const restartSoundWithBuffer = (buffer: AudioBuffer | null) => {
+    const ctx = audioContextRef.current;
+    if (!ctx || !buffer) return;
+    clearStillnessTimer();
+    stopSoundImmediate();
+
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.value = 3000;
+
+    const gain = ctx.createGain();
+    gain.gain.value = 0;
+
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+
+    source.start();
+    gain.gain.setTargetAtTime(0.5, ctx.currentTime, 0.03);
+
+    activeSourceRef.current = source;
+    gainNodeRef.current = gain;
+    filterNodeRef.current = filter;
+    hasStartedSoundRef.current = true;
+    resetStillnessTimer();
+  };
+  const stopSoundImmediate = (): void => {
+    const source = activeSourceRef.current;
+    try {
+      source?.stop();
+      source?.disconnect();
+    } catch {}
+
+    activeSourceRef.current = null;
+    gainNodeRef.current = null;
+    filterNodeRef.current = null;
+    hasStartedSoundRef.current = false;
   };
 
   return (

@@ -131,6 +131,7 @@ export default function ChalkboardBliss() {
       slow: buffer,
       fast: buffer,
       tap: null,
+      straight: buffer,
     };
     setAudioReady(true);
   };

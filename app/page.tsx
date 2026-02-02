@@ -33,6 +33,7 @@ export default function ChalkboardBliss() {
   const hasStartedSoundRef = useRef(false);
   const hasPlayedTapRef = useRef(false);
   const stillnessTimerRef = useRef<number | null>(null);
+  const currentDrawingSessionRef = useRef<number>(0);
 
   // Load all chalk .wav files from public folder
   useEffect(() => {
@@ -222,19 +223,20 @@ export default function ChalkboardBliss() {
     const source = activeSourceRef.current;
     if (!ctx || !gain || !filter || !source) return;
 
-    // Volume responds to speed
-    const volume = Math.min(0.2 + speed * 0.4, 0.8);
-    gain.gain.setTargetAtTime(volume, ctx.currentTime, 0.05);
+    // Volume responds to speed - more responsive range
+    const volume = Math.min(0.3 + speed * 0.5, 0.85);
+    gain.gain.cancelScheduledValues(ctx.currentTime);
+    gain.gain.setTargetAtTime(volume, ctx.currentTime, 0.02);
 
-    // Playback rate for natural feel
-    const playbackRate = 0.9 + Math.min(speed * 0.2, 0.4);
-    source.playbackRate.setTargetAtTime(playbackRate, ctx.currentTime, 0.05);
+    // Playback rate for natural feel - more variation
+    const playbackRate = 0.85 + Math.min(speed * 0.3, 0.5);
+    source.playbackRate.cancelScheduledValues(ctx.currentTime);
+    source.playbackRate.setTargetAtTime(playbackRate, ctx.currentTime, 0.02);
 
-    filter.frequency.setTargetAtTime(
-      2000 + Math.min(speed * 2500, 4000),
-      ctx.currentTime,
-      0.05,
-    );
+    // Filter frequency responds more dramatically to speed changes
+    const filterFreq = 1800 + Math.min(speed * 3000, 5000);
+    filter.frequency.cancelScheduledValues(ctx.currentTime);
+    filter.frequency.setTargetAtTime(filterFreq, ctx.currentTime, 0.02);
   };
 
   // Stop sound with fade out
@@ -244,6 +246,7 @@ export default function ChalkboardBliss() {
     const source = activeSourceRef.current;
 
     if (gain && ctx) {
+      gain.gain.cancelScheduledValues(ctx.currentTime);
       gain.gain.setTargetAtTime(0, ctx.currentTime, 0.03);
     }
 
@@ -273,11 +276,11 @@ export default function ChalkboardBliss() {
   const resetStillnessTimer = (): void => {
     clearStillnessTimer();
 
-    // If we're drawing and sound has started, set a timer to stop sound after 150ms of no movement
+    // If we're drawing and sound has started, set a timer to stop sound after 100ms of no movement
     if (isDrawing && hasStartedSoundRef.current) {
       stillnessTimerRef.current = window.setTimeout(() => {
         stopSound();
-      }, 150);
+      }, 100);
     }
   };
 
@@ -330,6 +333,9 @@ export default function ChalkboardBliss() {
 
     const now = performance.now();
 
+    // Increment session counter to track unique drawing sessions
+    currentDrawingSessionRef.current += 1;
+
     setIsDrawing(true);
     setHasMoved(false);
     lastPosRef.current = { x, y };
@@ -337,15 +343,18 @@ export default function ChalkboardBliss() {
 
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    // Reset flags for new drawing session
     hasStartedSoundRef.current = false;
     hasPlayedTapRef.current = false;
+
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
     ctx.beginPath();
     ctx.moveTo(x, y);
 
-    // Start sound immediately
+    // Play tap sound only once at the very start of a new touch
     playTapSound();
     hasPlayedTapRef.current = true;
 
@@ -405,16 +414,16 @@ export default function ChalkboardBliss() {
       setHasMoved(true);
     }
 
-    if (distance > 0.5) {
+    if (distance > 0.3) {
       // Clear any existing stillness timer since we're moving
       clearStillnessTimer();
 
       if (!hasStartedSoundRef.current) {
-        startSound(); // ONE TIME
+        startSound();
         hasStartedSoundRef.current = true;
       }
 
-      // Update sound parameters based on speed
+      // Update sound parameters based on speed - now happens every frame for better sync
       updateSound(speed);
 
       const canvas = canvasRef.current;

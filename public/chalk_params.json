@@ -1,0 +1,11 @@
+{
+  "bandpassFreq": 1200,
+  "bandpassFreqSpread": 500,
+  "bandpassQ": 0.7,
+  "bandpassQSpread": 0.35,
+  "grainGainMin": 0.26,
+  "grainGainMax": 0.42,
+  "tapGain": 0.5,
+  "tapBandpassFreq": 1400,
+  "tapBandpassQ": 0.8
+}

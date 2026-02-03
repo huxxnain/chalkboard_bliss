@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 import React, { useRef, useEffect, useState } from "react";
+import * as Tone from "tone";
 
 interface Coordinates {
   x: number;
@@ -18,122 +19,177 @@ export default function ChalkboardBliss() {
   const lastAngleRef = useRef<number | null>(null);
   const straightScoreRef = useRef<number>(0);
   const usingStraightRef = useRef<boolean>(false);
-  // Audio refs
+  // Audio: procedural only (no WAVs). Optional params from Python (find_chalk_params.py).
   const audioContextRef = useRef<AudioContext | null>(null);
   const chalkBuffersRef = useRef<{
-    draw: AudioBuffer | null;
-    slow: AudioBuffer | null;
-    fast: AudioBuffer | null;
+    grains: AudioBuffer[];
     tap: AudioBuffer | null;
-    straight: AudioBuffer | null;
-  }>({
-    draw: null,
-    slow: null,
-    fast: null,
-    tap: null,
-    straight: null,
-  });
-  const activeSourceRef = useRef<AudioBufferSourceNode | null>(null);
-  const gainNodeRef = useRef<GainNode | null>(null);
-  const filterNodeRef = useRef<BiquadFilterNode | null>(null);
+  }>({ grains: [], tap: null });
+  const chalkParamsRef = useRef<{
+    bandpassFreq?: number;
+    bandpassFreqSpread?: number;
+    bandpassQ?: number;
+    bandpassQSpread?: number;
+    grainGainMin?: number;
+    grainGainMax?: number;
+    tapGain?: number;
+    tapBandpassFreq?: number;
+    tapBandpassQ?: number;
+  } | null>(null);
+  const tapIsWavRef = useRef(false);
+  /** Scratch: Tone.js brown noise + bandpass (warmer, more natural) */
+  const toneNoiseRef = useRef<Tone.Noise | null>(null);
+  const toneFilterRef = useRef<Tone.Filter | null>(null);
+  const toneGainRef = useRef<Tone.Gain | null>(null);
+  const toneScratchStartedRef = useRef(false);
 
   const lastPosRef = useRef<Coordinates>({ x: 0, y: 0 });
   const lastTimeRef = useRef<number>(0);
-  const hasStartedSoundRef = useRef(false);
   const hasPlayedTapRef = useRef(false);
   const stillnessTimerRef = useRef<number | null>(null);
   const currentDrawingSessionRef = useRef<number>(0);
+  const accumulatedDistanceRef = useRef<number>(0);
 
-  // Load all chalk .wav files from public folder
+  // Chalk sound: 100% procedural in browser (no WAVs). Python can export params to tune.
   useEffect(() => {
     const AudioContext =
       window.AudioContext || (window as any).webkitAudioContext;
     const ctx = new AudioContext();
     audioContextRef.current = ctx;
 
-    const loadWavFile = async (path: string): Promise<AudioBuffer | null> => {
-      try {
-        const response = await fetch(path);
-        if (response.ok) {
-          const arrayBuffer = await response.arrayBuffer();
-          return await ctx.decodeAudioData(arrayBuffer);
+    // Pink noise (Voss-McCartney) into float32 array
+    const pinkNoise = (n: number): Float32Array => {
+      const out = new Float32Array(n);
+      let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+      for (let i = 0; i < n; i++) {
+        const white = Math.random() * 2 - 1;
+        b0 = 0.99886 * b0 + white * 0.0555179;
+        b1 = 0.99332 * b1 + white * 0.0750759;
+        b2 = 0.969 * b2 + white * 0.153852;
+        b3 = 0.8665 * b3 + white * 0.3104856;
+        b4 = 0.55 * b4 + white * 0.5329522;
+        b5 = -0.7616 * b5 - white * 0.016898;
+        const pink = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362;
+        b6 = white * 0.115926;
+        out[i] = pink;
+      }
+      const max = Math.max(1e-6, ...Array.from(out).map(Math.abs));
+      for (let i = 0; i < n; i++) out[i] /= max;
+      return out;
+    };
+
+    const envelope = (n: number, attackFrac: number, decayFrac: number): Float32Array => {
+      const env = new Float32Array(n);
+      const attack = Math.floor(n * attackFrac);
+      const decayStart = Math.floor(n * (1 - decayFrac));
+      for (let i = 0; i < attack; i++) env[i] = i / attack;
+      for (let i = attack; i < decayStart; i++) env[i] = 1;
+      for (let i = decayStart; i < n; i++) env[i] = 1 - (i - decayStart) / (n - decayStart) * 0.85;
+      return env;
+    };
+
+    const sr = ctx.sampleRate;
+    const grains: AudioBuffer[] = [];
+
+    const tapLen = Math.floor(sr * 0.06);
+    const tapBuf = ctx.createBuffer(1, tapLen, sr);
+    const tapCh = tapBuf.getChannelData(0);
+    const tapNoise = pinkNoise(tapLen);
+    for (let j = 0; j < tapLen; j++) tapCh[j] = tapNoise[j] * (1 - j / tapLen) * 0.5;
+    const tapMax = Math.max(1e-6, ...Array.from(tapCh).map(Math.abs));
+    for (let j = 0; j < tapLen; j++) tapCh[j] /= tapMax * 2;
+
+    chalkBuffersRef.current = { grains, tap: tapBuf };
+
+    fetch("/chalk_params.json")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((p) => {
+        if (p) chalkParamsRef.current = p;
+      })
+      .catch(() => {});
+
+    // Tap: use WAV if present. Try public root then chalk_grains/
+    const tryTapWav = (path: string) =>
+      fetch(path)
+        .then((r) => (r.ok ? r.arrayBuffer() : null))
+        .then((ab) => (ab ? ctx.decodeAudioData(ab) : null));
+    tryTapWav("/chalk-tap.wav")
+      .then((wavTap) => {
+        if (wavTap) {
+          chalkBuffersRef.current.tap = wavTap;
+          tapIsWavRef.current = true;
+          return;
         }
-      } catch (e) {
-        console.warn(`Could not load ${path}`);
-      }
-      return null;
-    };
+        return tryTapWav("/chalk_grains/chalk_tap.wav");
+      })
+      .then((wavTap) => {
+        if (wavTap) {
+          chalkBuffersRef.current.tap = wavTap;
+          tapIsWavRef.current = true;
+        }
+      })
+      .catch(() => {});
 
-    const loadChalkSounds = async () => {
-      const [draw, slow, fast, tap, straight] = await Promise.all([
-        loadWavFile("/chalk-draw.wav"),
-        loadWavFile("/chalk-slow.wav"),
-        loadWavFile("/chalk-fast.wav"),
-        loadWavFile("/chalk-tap.wav"),
-        loadWavFile("/chalk-straight.wav"),
-      ]);
+    // Scratch: Tone.js brown noise + bandpass (warmer, softer, more natural)
+    const noise = new Tone.Noise("brown");
+    const filter = new Tone.Filter({
+      type: "bandpass",
+      frequency: 1200,
+      Q: 0.6,
+    });
+    const gain = new Tone.Gain(0).toDestination();
+    noise.connect(filter);
+    filter.connect(gain);
+    gain.gain.value = 0;
+    toneNoiseRef.current = noise;
+    toneFilterRef.current = filter;
+    toneGainRef.current = gain;
 
-      chalkBuffersRef.current = { draw, slow, fast, tap, straight };
-
-      if (draw || slow || fast) {
-        setAudioReady(true);
-        console.log("✓ Loaded chalk sounds:", {
-          draw: !!draw,
-          slow: !!slow,
-          fast: !!fast,
-          tap: !!tap,
-        });
-      } else {
-        console.log(
-          "No chalk .wav files found. Add chalk-draw.wav to /public folder.",
-        );
-        createFallbackSound(ctx);
-      }
-    };
-
-    loadChalkSounds();
+    setAudioReady(true);
 
     return () => {
-      stopSound();
       ctx.close();
+      try {
+        noise.dispose();
+        filter.dispose();
+        gain.dispose();
+      } catch (_) {}
+      toneNoiseRef.current = null;
+      toneFilterRef.current = null;
+      toneGainRef.current = null;
     };
   }, []);
 
-  // Create fallback procedural sound (used only if no real audio file)
-  const createFallbackSound = (ctx: AudioContext) => {
-    const duration = 4;
-    const bufferSize = ctx.sampleRate * duration;
-    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-    const data = buffer.getChannelData(0);
+  const startToneScratch = (): void => {
+    if (toneScratchStartedRef.current) return;
+    const n = toneNoiseRef.current;
+    const g = toneGainRef.current;
+    if (!n || !g) return;
+    Tone.start().then(() => {
+      n.start();
+      g.gain.rampTo(0.38, 0.02);
+      toneScratchStartedRef.current = true;
+    }).catch(() => {});
+  };
 
-    // Pink noise
-    let b0 = 0,
-      b1 = 0,
-      b2 = 0,
-      b3 = 0,
-      b4 = 0,
-      b5 = 0,
-      b6 = 0;
-    for (let i = 0; i < bufferSize; i++) {
-      const white = Math.random() * 2 - 1;
-      b0 = 0.99886 * b0 + white * 0.0555179;
-      b1 = 0.99332 * b1 + white * 0.0750759;
-      b2 = 0.969 * b2 + white * 0.153852;
-      b3 = 0.8665 * b3 + white * 0.3104856;
-      b4 = 0.55 * b4 + white * 0.5329522;
-      b5 = -0.7616 * b5 - white * 0.016898;
-      const pink = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362;
-      b6 = white * 0.115926;
-      data[i] = pink * 0.04;
-    }
-    chalkBuffersRef.current = {
-      draw: buffer,
-      slow: buffer,
-      fast: buffer,
-      tap: null,
-      straight: buffer,
-    };
-    setAudioReady(true);
+  const updateToneScratch = (speed: number): void => {
+    const filter = toneFilterRef.current;
+    const g = toneGainRef.current;
+    if (!filter || !g) return;
+    // Slight modulation: faster draw = bit brighter + slightly louder
+    const freq = 900 + Math.min(800, speed * 80);
+    const gainVal = 0.28 + Math.min(0.15, speed * 0.012);
+    filter.frequency.rampTo(freq, 0.05);
+    g.gain.rampTo(gainVal, 0.05);
+  };
+
+  const stopToneScratch = (): void => {
+    if (!toneScratchStartedRef.current) return;
+    const n = toneNoiseRef.current;
+    const g = toneGainRef.current;
+    if (g) g.gain.rampTo(0, 0.04);
+    if (n) n.stop();
+    toneScratchStartedRef.current = false;
   };
 
   // Initialize canvas
@@ -176,106 +232,41 @@ export default function ChalkboardBliss() {
     return () => window.removeEventListener("resize", resizeCanvas);
   }, [imageLoaded]);
 
-  // Play tap sound (chalk touching board) - one shot
+  // Play tap: WAV (original feel, dry) or procedural (bandpass)
   const playTapSound = (): void => {
     const ctx = audioContextRef.current;
     const tapBuffer = chalkBuffersRef.current.tap;
+    const p = chalkParamsRef.current;
     if (!ctx || !tapBuffer) return;
-
-    if (ctx.state === "suspended") {
-      ctx.resume();
-    }
+    if (ctx.state === "suspended") ctx.resume();
 
     const source = ctx.createBufferSource();
     source.buffer = tapBuffer;
     const gain = ctx.createGain();
-    gain.gain.value = 0.6;
-    source.connect(gain);
-    gain.connect(ctx.destination);
-    source.start();
-  };
+    gain.gain.value = p?.tapGain ?? (tapIsWavRef.current ? 0.6 : 0.5);
 
-  // Start playing chalk drawing sound
-  const startSound = () => {
-    const ctx = audioContextRef.current;
-    const buffer = chalkBuffersRef.current.draw;
-    if (!ctx || !buffer || activeSourceRef.current) return;
-
-    if (ctx.state === "suspended") ctx.resume();
-
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.loop = true;
-
-    const filter = ctx.createBiquadFilter();
-    filter.type = "lowpass";
-    filter.frequency.value = 3000;
-
-    const gain = ctx.createGain();
-    gain.gain.value = 0;
-
-    source.connect(filter);
-    filter.connect(gain);
-    gain.connect(ctx.destination);
-
-    source.start();
-    gain.gain.setTargetAtTime(0.5, ctx.currentTime, 0.03);
-
-    activeSourceRef.current = source;
-    gainNodeRef.current = gain;
-    filterNodeRef.current = filter;
-  };
-
-  // Update sound based on drawing speed
-  const updateSound = (speed: number): void => {
-    const ctx = audioContextRef.current;
-    const gain = gainNodeRef.current;
-    const filter = filterNodeRef.current;
-    const source = activeSourceRef.current;
-    if (!ctx || !gain || !filter || !source) return;
-
-    // Volume responds to speed - more responsive range
-    const volume = Math.min(0.3 + speed * 0.5, 0.85);
-    gain.gain.cancelScheduledValues(ctx.currentTime);
-    gain.gain.setTargetAtTime(volume, ctx.currentTime, 0.02);
-
-    // Playback rate for natural feel - more variation
-    const playbackRate = 0.85 + Math.min(speed * 0.3, 0.5);
-    source.playbackRate.cancelScheduledValues(ctx.currentTime);
-    source.playbackRate.setTargetAtTime(playbackRate, ctx.currentTime, 0.02);
-
-    // Filter frequency responds more dramatically to speed changes
-    const filterFreq = 1800 + Math.min(speed * 3000, 5000);
-    filter.frequency.cancelScheduledValues(ctx.currentTime);
-    filter.frequency.setTargetAtTime(filterFreq, ctx.currentTime, 0.02);
-  };
-
-  // Stop sound with fade out
-  const stopSound = (): void => {
-    const ctx = audioContextRef.current;
-    const gain = gainNodeRef.current;
-    const source = activeSourceRef.current;
-
-    if (gain && ctx) {
-      gain.gain.cancelScheduledValues(ctx.currentTime);
-      gain.gain.setTargetAtTime(0, ctx.currentTime, 0.03);
+    if (tapIsWavRef.current) {
+      source.connect(gain);
+      gain.connect(ctx.destination);
+    } else {
+      const filter = ctx.createBiquadFilter();
+      filter.type = "bandpass";
+      filter.frequency.value = p?.tapBandpassFreq ?? 1400;
+      filter.Q.value = p?.tapBandpassQ ?? 0.8;
+      source.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
     }
-
-    setTimeout(() => {
-      if (source) {
-        try {
-          source.stop();
-          source.disconnect();
-        } catch (e) {}
-      }
-      activeSourceRef.current = null;
-      gainNodeRef.current = null;
-      filterNodeRef.current = null;
-      hasStartedSoundRef.current = false;
-    }, 100);
+    source.start();
   };
 
-  // Clear the stillness timer
+  // Scratch: Tone.js brown noise + bandpass; modulate by draw speed
+  const updateScratchSound = (speed: number): void => {
+    startToneScratch();
+    updateToneScratch(speed);
+  };
+
+  // Clear the stillness timer (kept for any future use; grains need no stop)
   const clearStillnessTimer = (): void => {
     if (stillnessTimerRef.current) {
       clearTimeout(stillnessTimerRef.current);
@@ -283,16 +274,8 @@ export default function ChalkboardBliss() {
     }
   };
 
-  // Start a timer to detect when drawing has stopped
   const resetStillnessTimer = (): void => {
     clearStillnessTimer();
-
-    // If we're drawing and sound has started, set a timer to stop sound after 100ms of no movement
-    if (isDrawing && hasStartedSoundRef.current) {
-      stillnessTimerRef.current = window.setTimeout(() => {
-        stopSound();
-      }, 100);
-    }
   };
 
   const isInDrawableArea = (x: number, y: number): boolean => {
@@ -358,9 +341,8 @@ export default function ChalkboardBliss() {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    // Reset flags for new drawing session
-    hasStartedSoundRef.current = false;
     hasPlayedTapRef.current = false;
+    accumulatedDistanceRef.current = 0;
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -429,16 +411,8 @@ export default function ChalkboardBliss() {
     }
 
     if (distance > 0.3) {
-      // Clear any existing stillness timer since we're moving
       clearStillnessTimer();
 
-      if (!hasStartedSoundRef.current) {
-        startSound();
-        hasStartedSoundRef.current = true;
-      }
-
-      // Update sound parameters based on speed - now happens every frame for better sync
-      updateSound(speed);
       const angle = Math.atan2(deltaY, deltaX);
 
       if (lastAngleRef.current !== null) {
@@ -453,15 +427,10 @@ export default function ChalkboardBliss() {
       lastAngleRef.current = angle;
 
       const shouldUseStraight = straightScoreRef.current > 8;
+      usingStraightRef.current = shouldUseStraight;
 
-      if (shouldUseStraight !== usingStraightRef.current) {
-        restartSoundWithBuffer(
-          shouldUseStraight
-            ? chalkBuffersRef.current.straight
-            : chalkBuffersRef.current.draw,
-        );
-        usingStraightRef.current = shouldUseStraight;
-      }
+      // Scratch: Tone.js brown noise + bandpass
+      updateScratchSound(speed);
       const canvas = canvasRef.current;
       if (!canvas) return;
 
@@ -503,6 +472,7 @@ export default function ChalkboardBliss() {
 
   const stopDrawing = (): void => {
     clearStillnessTimer();
+    stopToneScratch();
 
     if (fillIntervalRef.current) {
       clearInterval(fillIntervalRef.current);
@@ -515,19 +485,17 @@ export default function ChalkboardBliss() {
     lastAngleRef.current = null;
     straightScoreRef.current = 0;
     usingStraightRef.current = false;
-    hasStartedSoundRef.current = false;
-    stopSound();
   };
 
   const handleMouseLeave = (): void => {
     clearStillnessTimer();
+    stopToneScratch();
 
     if (fillIntervalRef.current) {
       clearInterval(fillIntervalRef.current);
       fillIntervalRef.current = null;
     }
     setIsDrawing(false);
-    stopSound();
   };
 
   const clearCanvas = (): void => {
@@ -550,49 +518,6 @@ export default function ChalkboardBliss() {
 
     ctx.restore();
   };
-  const restartSoundWithBuffer = (buffer: AudioBuffer | null) => {
-    const ctx = audioContextRef.current;
-    if (!ctx || !buffer) return;
-    clearStillnessTimer();
-    stopSoundImmediate();
-
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.loop = true;
-
-    const filter = ctx.createBiquadFilter();
-    filter.type = "lowpass";
-    filter.frequency.value = 3000;
-
-    const gain = ctx.createGain();
-    gain.gain.value = 0;
-
-    source.connect(filter);
-    filter.connect(gain);
-    gain.connect(ctx.destination);
-
-    source.start();
-    gain.gain.setTargetAtTime(0.5, ctx.currentTime, 0.03);
-
-    activeSourceRef.current = source;
-    gainNodeRef.current = gain;
-    filterNodeRef.current = filter;
-    hasStartedSoundRef.current = true;
-    resetStillnessTimer();
-  };
-  const stopSoundImmediate = (): void => {
-    const source = activeSourceRef.current;
-    try {
-      source?.stop();
-      source?.disconnect();
-    } catch {}
-
-    activeSourceRef.current = null;
-    gainNodeRef.current = null;
-    filterNodeRef.current = null;
-    hasStartedSoundRef.current = false;
-  };
-
   return (
     <div className="w-full h-screen flex flex-col bg-gray-900">
       <div className="bg-gray-800 p-4 shadow-lg flex items-center justify-between">

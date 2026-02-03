@@ -37,11 +37,12 @@ export default function ChalkboardBliss() {
     tapBandpassQ?: number;
   } | null>(null);
   const tapIsWavRef = useRef(false);
-  /** Scratch: Tone.js brown noise + bandpass (warmer, more natural) */
+  /** Scratch: Tone.js brown noise + bandpass */
   const toneNoiseRef = useRef<Tone.Noise | null>(null);
   const toneFilterRef = useRef<Tone.Filter | null>(null);
   const toneGainRef = useRef<Tone.Gain | null>(null);
   const toneScratchStartedRef = useRef(false);
+  const filterDriftRef = useRef(0);
 
   const lastPosRef = useRef<Coordinates>({ x: 0, y: 0 });
   const lastTimeRef = useRef<number>(0);
@@ -130,12 +131,12 @@ export default function ChalkboardBliss() {
       })
       .catch(() => {});
 
-    // Scratch: Tone.js brown noise + bandpass (warmer, softer, more natural)
+    // Scratch: brown noise + bandpass only (warm, natural chalk)
     const noise = new Tone.Noise("brown");
     const filter = new Tone.Filter({
       type: "bandpass",
-      frequency: 1200,
-      Q: 0.6,
+      frequency: 1100,
+      Q: 0.55,
     });
     const gain = new Tone.Gain(0).toDestination();
     noise.connect(filter);
@@ -172,15 +173,19 @@ export default function ChalkboardBliss() {
     }).catch(() => {});
   };
 
-  const updateToneScratch = (speed: number): void => {
+  const updateToneScratch = (speed: number, angleDiffRad: number): void => {
     const filter = toneFilterRef.current;
     const g = toneGainRef.current;
     if (!filter || !g) return;
-    // Slight modulation: faster draw = bit brighter + slightly louder
-    const freq = 900 + Math.min(800, speed * 80);
-    const gainVal = 0.28 + Math.min(0.15, speed * 0.012);
-    filter.frequency.rampTo(freq, 0.05);
-    g.gain.rampTo(gainVal, 0.05);
+    filterDriftRef.current += (Math.random() - 0.5) * 70;
+    filterDriftRef.current = Math.max(-180, Math.min(180, filterDriftRef.current));
+    const speedFreq = 850 + Math.min(750, speed * 90);
+    const speedGain = 0.22 + Math.min(0.2, speed * 0.014);
+    const curveBoost = Math.min(400, angleDiffRad * 900);
+    const gainVal = Math.min(0.48, speedGain + angleDiffRad * 0.5);
+    const freq = speedFreq + curveBoost + filterDriftRef.current;
+    filter.frequency.rampTo(Math.max(500, Math.min(2000, freq)), 0.04);
+    g.gain.rampTo(gainVal, 0.04);
   };
 
   const stopToneScratch = (): void => {
@@ -190,6 +195,7 @@ export default function ChalkboardBliss() {
     if (g) g.gain.rampTo(0, 0.04);
     if (n) n.stop();
     toneScratchStartedRef.current = false;
+    filterDriftRef.current = 0;
   };
 
   // Initialize canvas
@@ -260,10 +266,10 @@ export default function ChalkboardBliss() {
     source.start();
   };
 
-  // Scratch: Tone.js brown noise + bandpass; modulate by draw speed
-  const updateScratchSound = (speed: number): void => {
+  // Scratch: Tone.js brown noise + bandpass; modulate by speed and curvature
+  const updateScratchSound = (speed: number, angleDiffRad: number): void => {
     startToneScratch();
-    updateToneScratch(speed);
+    updateToneScratch(speed, angleDiffRad);
   };
 
   // Clear the stillness timer (kept for any future use; grains need no stop)
@@ -415,8 +421,10 @@ export default function ChalkboardBliss() {
 
       const angle = Math.atan2(deltaY, deltaX);
 
+      let angleDiffRad = 0;
       if (lastAngleRef.current !== null) {
         const diff = Math.abs(angle - lastAngleRef.current);
+        angleDiffRad = Math.min(diff, Math.PI * 2 - diff); // normalize wrap
         if (diff < 0.12) {
           straightScoreRef.current++;
         } else {
@@ -429,8 +437,8 @@ export default function ChalkboardBliss() {
       const shouldUseStraight = straightScoreRef.current > 8;
       usingStraightRef.current = shouldUseStraight;
 
-      // Scratch: Tone.js brown noise + bandpass
-      updateScratchSound(speed);
+      // Scratch: Tone.js brown noise + bandpass (varies with speed + curvature)
+      updateScratchSound(speed, angleDiffRad);
       const canvas = canvasRef.current;
       if (!canvas) return;
 
@@ -465,8 +473,12 @@ export default function ChalkboardBliss() {
       lastPosRef.current = { x, y };
       lastTimeRef.current = timestamp;
 
-      // Start a new stillness timer
-      resetStillnessTimer();
+      // Stop scratch after ~80ms of no movement (pointer still down)
+      clearStillnessTimer();
+      stillnessTimerRef.current = window.setTimeout(() => {
+        stopToneScratch();
+        stillnessTimerRef.current = null;
+      }, 80);
     }
   };
 

@@ -1,17 +1,27 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 import React, { useRef, useEffect, useState } from "react";
-import * as Tone from "tone";
 
 interface Coordinates {
   x: number;
   y: number;
 }
 
+const SCRATCH_FILES = [
+  "scratch-tap",
+  "scratch-start",
+  "scratch-slow",
+  "scratch-fast",
+  "scratch-wave",
+  "scratch-dot-fill",
+] as const;
+type ScratchKey = (typeof SCRATCH_FILES)[number];
+
 export default function ChalkboardBliss() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bgImageRef = useRef<HTMLImageElement | null>(null);
   const [isDrawing, setIsDrawing] = useState<boolean>(false);
+  const isDrawingRef = useRef(false);
   const [hasMoved, setHasMoved] = useState<boolean>(false);
   const [imageLoaded, setImageLoaded] = useState<boolean>(false);
   const [audioReady, setAudioReady] = useState<boolean>(false);
@@ -19,183 +29,163 @@ export default function ChalkboardBliss() {
   const lastAngleRef = useRef<number | null>(null);
   const straightScoreRef = useRef<number>(0);
   const usingStraightRef = useRef<boolean>(false);
-  // Audio: procedural only (no WAVs). Optional params from Python (find_chalk_params.py).
+
   const audioContextRef = useRef<AudioContext | null>(null);
-  const chalkBuffersRef = useRef<{
-    grains: AudioBuffer[];
-    tap: AudioBuffer | null;
-  }>({ grains: [], tap: null });
-  const chalkParamsRef = useRef<{
-    bandpassFreq?: number;
-    bandpassFreqSpread?: number;
-    bandpassQ?: number;
-    bandpassQSpread?: number;
-    grainGainMin?: number;
-    grainGainMax?: number;
-    tapGain?: number;
-    tapBandpassFreq?: number;
-    tapBandpassQ?: number;
-  } | null>(null);
-  const tapIsWavRef = useRef(false);
-  /** Scratch: Tone.js brown noise + bandpass */
-  const toneNoiseRef = useRef<Tone.Noise | null>(null);
-  const toneFilterRef = useRef<Tone.Filter | null>(null);
-  const toneGainRef = useRef<Tone.Gain | null>(null);
-  const toneScratchStartedRef = useRef(false);
-  const filterDriftRef = useRef(0);
+  const scratchBuffersRef = useRef<Partial<Record<ScratchKey, AudioBuffer>>>({});
+  const scratchWaveSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const scratchWaveGainRef = useRef<GainNode | null>(null);
+  const scratchStartedRef = useRef(false);
+  const smoothedSpeedRef = useRef(0);
+  const tabVisibleRef = useRef(true);
+  const hasMovedThisStrokeRef = useRef(false);
+  const hasMovedRef = useRef(false);
+  const havePlayedStartThisStrokeRef = useRef(false);
+  const havePlayedTapThisStrokeRef = useRef(false);
+  const havePlayedDotFillThisHoldRef = useRef(false);
 
   const lastPosRef = useRef<Coordinates>({ x: 0, y: 0 });
   const lastTimeRef = useRef<number>(0);
-  const hasPlayedTapRef = useRef(false);
   const stillnessTimerRef = useRef<number | null>(null);
   const currentDrawingSessionRef = useRef<number>(0);
   const accumulatedDistanceRef = useRef<number>(0);
 
-  // Chalk sound: 100% procedural in browser (no WAVs). Python can export params to tune.
+  // Load scratch WAVs (scratch-tap, scratch-slow, scratch-fast, etc.)
   useEffect(() => {
     const AudioContext =
       window.AudioContext || (window as any).webkitAudioContext;
     const ctx = new AudioContext();
     audioContextRef.current = ctx;
 
-    // Pink noise (Voss-McCartney) into float32 array
-    const pinkNoise = (n: number): Float32Array => {
-      const out = new Float32Array(n);
-      let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
-      for (let i = 0; i < n; i++) {
-        const white = Math.random() * 2 - 1;
-        b0 = 0.99886 * b0 + white * 0.0555179;
-        b1 = 0.99332 * b1 + white * 0.0750759;
-        b2 = 0.969 * b2 + white * 0.153852;
-        b3 = 0.8665 * b3 + white * 0.3104856;
-        b4 = 0.55 * b4 + white * 0.5329522;
-        b5 = -0.7616 * b5 - white * 0.016898;
-        const pink = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362;
-        b6 = white * 0.115926;
-        out[i] = pink;
-      }
-      const max = Math.max(1e-6, ...Array.from(out).map(Math.abs));
-      for (let i = 0; i < n; i++) out[i] /= max;
-      return out;
-    };
-
-    const envelope = (n: number, attackFrac: number, decayFrac: number): Float32Array => {
-      const env = new Float32Array(n);
-      const attack = Math.floor(n * attackFrac);
-      const decayStart = Math.floor(n * (1 - decayFrac));
-      for (let i = 0; i < attack; i++) env[i] = i / attack;
-      for (let i = attack; i < decayStart; i++) env[i] = 1;
-      for (let i = decayStart; i < n; i++) env[i] = 1 - (i - decayStart) / (n - decayStart) * 0.85;
-      return env;
-    };
-
-    const sr = ctx.sampleRate;
-    const grains: AudioBuffer[] = [];
-
-    const tapLen = Math.floor(sr * 0.06);
-    const tapBuf = ctx.createBuffer(1, tapLen, sr);
-    const tapCh = tapBuf.getChannelData(0);
-    const tapNoise = pinkNoise(tapLen);
-    for (let j = 0; j < tapLen; j++) tapCh[j] = tapNoise[j] * (1 - j / tapLen) * 0.5;
-    const tapMax = Math.max(1e-6, ...Array.from(tapCh).map(Math.abs));
-    for (let j = 0; j < tapLen; j++) tapCh[j] /= tapMax * 2;
-
-    chalkBuffersRef.current = { grains, tap: tapBuf };
-
-    fetch("/chalk_params.json")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((p) => {
-        if (p) chalkParamsRef.current = p;
-      })
-      .catch(() => {});
-
-    // Tap: use WAV if present. Try public root then chalk_grains/
-    const tryTapWav = (path: string) =>
+    const decode = (path: string, label: string) =>
       fetch(path)
-        .then((r) => (r.ok ? r.arrayBuffer() : null))
-        .then((ab) => (ab ? ctx.decodeAudioData(ab) : null));
-    tryTapWav("/chalk-tap.wav")
-      .then((wavTap) => {
-        if (wavTap) {
-          chalkBuffersRef.current.tap = wavTap;
-          tapIsWavRef.current = true;
-          return;
-        }
-        return tryTapWav("/chalk_grains/chalk_tap.wav");
-      })
-      .then((wavTap) => {
-        if (wavTap) {
-          chalkBuffersRef.current.tap = wavTap;
-          tapIsWavRef.current = true;
-        }
-      })
-      .catch(() => {});
+        .then((r) => {
+          if (!r.ok) {
+            console.warn(`[sound] ${label}: fetch failed ${r.status} ${path}`);
+            return null;
+          }
+          return r.arrayBuffer();
+        })
+        .then((ab) => (ab ? ctx.decodeAudioData(ab) : null))
+        .then((buf) => {
+          if (buf) console.log(`[sound] loaded: ${label}`);
+          return buf;
+        })
+        .catch((err) => {
+          console.warn(`[sound] ${label}:`, err);
+          return null;
+        });
 
-    // Scratch: brown noise + bandpass only (warm, natural chalk)
-    const noise = new Tone.Noise("brown");
-    const filter = new Tone.Filter({
-      type: "bandpass",
-      frequency: 1100,
-      Q: 0.55,
+    console.log("[sound] loading scratch WAVs...");
+    Promise.all(
+      SCRATCH_FILES.map((key) =>
+        decode(`/${key}.wav`, key).then((buf) => ({ key, buf }))
+      )
+    ).then((results) => {
+      const buffers: Partial<Record<ScratchKey, AudioBuffer>> = {};
+      results.forEach(({ key, buf }) => {
+        if (buf) buffers[key] = buf;
+      });
+      scratchBuffersRef.current = buffers;
+      const loaded = Object.keys(buffers).length;
+      console.log(`[sound] ready: ${loaded}/${SCRATCH_FILES.length} files`);
+      setAudioReady(true);
+    }).catch((err) => {
+      console.error("[sound] load failed:", err);
+      setAudioReady(true);
     });
-    const gain = new Tone.Gain(0).toDestination();
-    noise.connect(filter);
-    filter.connect(gain);
-    gain.gain.value = 0;
-    toneNoiseRef.current = noise;
-    toneFilterRef.current = filter;
-    toneGainRef.current = gain;
 
-    setAudioReady(true);
+    const onVisibilityChange = () => {
+      tabVisibleRef.current = document.visibilityState === "visible";
+      if (!tabVisibleRef.current) {
+        if (scratchStartedRef.current) {
+          const src = scratchWaveSourceRef.current;
+          if (src) {
+            try {
+              src.stop();
+            } catch (_) {}
+            scratchWaveSourceRef.current = null;
+          }
+          scratchWaveGainRef.current = null;
+          scratchStartedRef.current = false;
+        }
+      }
+    };
+    tabVisibleRef.current = document.visibilityState === "visible";
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       ctx.close();
-      try {
-        noise.dispose();
-        filter.dispose();
-        gain.dispose();
-      } catch (_) {}
-      toneNoiseRef.current = null;
-      toneFilterRef.current = null;
-      toneGainRef.current = null;
+      audioContextRef.current = null;
+      scratchBuffersRef.current = {};
     };
   }, []);
 
-  const startToneScratch = (): void => {
-    if (toneScratchStartedRef.current) return;
-    const n = toneNoiseRef.current;
-    const g = toneGainRef.current;
-    if (!n || !g) return;
-    Tone.start().then(() => {
-      n.start();
-      g.gain.rampTo(0.38, 0.02);
-      toneScratchStartedRef.current = true;
-    }).catch(() => {});
+  const startScratchSound = (): void => {
+    if (!tabVisibleRef.current) return;
+    if (scratchStartedRef.current) return;
+    const ctx = audioContextRef.current;
+    const buffers = scratchBuffersRef.current;
+    const waveBuf = buffers["scratch-wave"] ?? buffers["scratch-slow"];
+    if (!ctx || !waveBuf) return;
+    if (ctx.state === "suspended") ctx.resume();
+
+    const startBuf = buffers["scratch-start"];
+    if (startBuf && !havePlayedStartThisStrokeRef.current) {
+      havePlayedStartThisStrokeRef.current = true;
+      const startSrc = ctx.createBufferSource();
+      startSrc.buffer = startBuf;
+      const startGain = ctx.createGain();
+      startGain.gain.value = 0.5;
+      startSrc.connect(startGain);
+      startGain.connect(ctx.destination);
+      startSrc.start(0);
+    }
+
+    const waveGain = ctx.createGain();
+    waveGain.gain.value = 0;
+    waveGain.connect(ctx.destination);
+
+    const waveSource = ctx.createBufferSource();
+    waveSource.buffer = waveBuf;
+    waveSource.loop = true;
+    waveSource.connect(waveGain);
+    waveSource.start(0);
+
+    scratchWaveSourceRef.current = waveSource;
+    scratchWaveGainRef.current = waveGain;
+    scratchStartedRef.current = true;
   };
 
-  const updateToneScratch = (speed: number, angleDiffRad: number): void => {
-    const filter = toneFilterRef.current;
-    const g = toneGainRef.current;
-    if (!filter || !g) return;
-    filterDriftRef.current += (Math.random() - 0.5) * 70;
-    filterDriftRef.current = Math.max(-180, Math.min(180, filterDriftRef.current));
-    const speedFreq = 850 + Math.min(750, speed * 90);
-    const speedGain = 0.22 + Math.min(0.2, speed * 0.014);
-    const curveBoost = Math.min(400, angleDiffRad * 900);
-    const gainVal = Math.min(0.48, speedGain + angleDiffRad * 0.5);
-    const freq = speedFreq + curveBoost + filterDriftRef.current;
-    filter.frequency.rampTo(Math.max(500, Math.min(2000, freq)), 0.04);
-    g.gain.rampTo(gainVal, 0.04);
+  const updateScratchSound = (speed: number, _angleDiffRad: number): void => {
+    if (!tabVisibleRef.current) return;
+    startScratchSound();
+    const waveGain = scratchWaveGainRef.current;
+    if (!waveGain) return;
+
+    const SMOOTH = 0.35;
+    const SPEED_MAX = 4;
+    smoothedSpeedRef.current =
+      SMOOTH * Math.min(speed, SPEED_MAX) +
+      (1 - SMOOTH) * smoothedSpeedRef.current;
+    const norm = Math.min(1, smoothedSpeedRef.current / SPEED_MAX);
+    const vol = 0.2 + norm * 0.35;
+    const t = audioContextRef.current?.currentTime ?? 0;
+    waveGain.gain.setTargetAtTime(vol, t, 0.03);
   };
 
-  const stopToneScratch = (): void => {
-    if (!toneScratchStartedRef.current) return;
-    const n = toneNoiseRef.current;
-    const g = toneGainRef.current;
-    if (g) g.gain.rampTo(0, 0.04);
-    if (n) n.stop();
-    toneScratchStartedRef.current = false;
-    filterDriftRef.current = 0;
+  const stopScratchSound = (): void => {
+    if (!scratchStartedRef.current) return;
+    const src = scratchWaveSourceRef.current;
+    if (src) {
+      try {
+        src.stop();
+      } catch (_) {}
+      scratchWaveSourceRef.current = null;
+    }
+    scratchWaveGainRef.current = null;
+    scratchStartedRef.current = false;
+    smoothedSpeedRef.current = 0;
   };
 
   // Initialize canvas
@@ -235,41 +225,28 @@ export default function ChalkboardBliss() {
 
     resizeCanvas();
     window.addEventListener("resize", resizeCanvas);
-    return () => window.removeEventListener("resize", resizeCanvas);
+    const ro = new ResizeObserver(() => resizeCanvas());
+    ro.observe(canvas);
+    return () => {
+      window.removeEventListener("resize", resizeCanvas);
+      ro.disconnect();
+    };
   }, [imageLoaded]);
 
-  // Play tap: WAV (original feel, dry) or procedural (bandpass)
   const playTapSound = (): void => {
+    if (!tabVisibleRef.current) return;
     const ctx = audioContextRef.current;
-    const tapBuffer = chalkBuffersRef.current.tap;
-    const p = chalkParamsRef.current;
+    const tapBuffer = scratchBuffersRef.current["scratch-tap"];
     if (!ctx || !tapBuffer) return;
     if (ctx.state === "suspended") ctx.resume();
 
     const source = ctx.createBufferSource();
     source.buffer = tapBuffer;
     const gain = ctx.createGain();
-    gain.gain.value = p?.tapGain ?? (tapIsWavRef.current ? 0.6 : 0.5);
-
-    if (tapIsWavRef.current) {
-      source.connect(gain);
-      gain.connect(ctx.destination);
-    } else {
-      const filter = ctx.createBiquadFilter();
-      filter.type = "bandpass";
-      filter.frequency.value = p?.tapBandpassFreq ?? 1400;
-      filter.Q.value = p?.tapBandpassQ ?? 0.8;
-      source.connect(filter);
-      filter.connect(gain);
-      gain.connect(ctx.destination);
-    }
+    gain.gain.value = 0.6;
+    source.connect(gain);
+    gain.connect(ctx.destination);
     source.start();
-  };
-
-  // Scratch: Tone.js brown noise + bandpass; modulate by speed and curvature
-  const updateScratchSound = (speed: number, angleDiffRad: number): void => {
-    startToneScratch();
-    updateToneScratch(speed, angleDiffRad);
   };
 
   // Clear the stillness timer (kept for any future use; grains need no stop)
@@ -288,11 +265,13 @@ export default function ChalkboardBliss() {
     const canvas = canvasRef.current;
     if (!canvas) return false;
 
-    const rect = canvas.getBoundingClientRect();
-    const leftBorder = rect.width * 0.06;
-    const rightBorder = rect.width * 0.94;
-    const topBorder = rect.height * 0.035;
-    const bottomBorder = rect.height * 0.965;
+    const dpr = window.devicePixelRatio || 1;
+    const logicalW = canvas.width / dpr;
+    const logicalH = canvas.height / dpr;
+    const leftBorder = logicalW * 0.06;
+    const rightBorder = logicalW * 0.94;
+    const topBorder = logicalH * 0.035;
+    const bottomBorder = logicalH * 0.965;
 
     return (
       x >= leftBorder && x <= rightBorder && y >= topBorder && y <= bottomBorder
@@ -308,17 +287,23 @@ export default function ChalkboardBliss() {
     if (!canvas) return { x: 0, y: 0 };
 
     const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const scaleX = canvas.width / dpr / rect.width;
+    const scaleY = canvas.height / dpr / rect.height;
 
+    let clientX: number;
+    let clientY: number;
     if ("touches" in e) {
-      return {
-        x: e.touches[0].clientX - rect.left,
-        y: e.touches[0].clientY - rect.top,
-      };
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
+    } else {
+      clientX = e.clientX;
+      clientY = e.clientY;
     }
-    return {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
-    };
+
+    const x = (clientX - rect.left) * scaleX;
+    const y = (clientY - rect.top) * scaleY;
+    return { x, y };
   };
 
   const startDrawing = (
@@ -337,7 +322,9 @@ export default function ChalkboardBliss() {
     currentDrawingSessionRef.current += 1;
 
     setIsDrawing(true);
+    isDrawingRef.current = true;
     setHasMoved(false);
+    hasMovedRef.current = false;
     lastAngleRef.current = null;
     straightScoreRef.current = 0;
     usingStraightRef.current = false;
@@ -347,44 +334,54 @@ export default function ChalkboardBliss() {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    hasPlayedTapRef.current = false;
+    const pointerId = (e.nativeEvent as PointerEvent).pointerId;
+    if (typeof pointerId === "number" && canvas.setPointerCapture) {
+      canvas.setPointerCapture(pointerId);
+    }
+
+    hasMovedThisStrokeRef.current = false;
+    havePlayedStartThisStrokeRef.current = false;
+    havePlayedTapThisStrokeRef.current = false;
+    havePlayedDotFillThisHoldRef.current = false;
     accumulatedDistanceRef.current = 0;
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    // Draw tap dot in buffer pixel space so size is always 2 CSS pixels (no scale/zoom variance)
+    const dpr = window.devicePixelRatio || 1;
+    const radiusBuffer = 2 * dpr; // 2 CSS pixels
+    const cx = x * dpr;
+    const cy = y * dpr;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.beginPath();
+    ctx.arc(cx, cy, radiusBuffer, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
+    ctx.fill();
+    ctx.restore();
+    // Start stroke path in logical space so draw() lineTo is correct
     ctx.beginPath();
     ctx.moveTo(x, y);
 
-    // Play tap sound only once at the very start of a new touch
-    playTapSound();
-    hasPlayedTapRef.current = true;
-
-    // Draw initial dot
-    ctx.beginPath();
-    ctx.arc(x, y, 1.5, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
-    ctx.fill();
-
-    // Stationary hold effect
+    // Hold: play dot-fill sound once after 600ms (not every 100ms)
     fillIntervalRef.current = window.setInterval(() => {
-      if (!hasMoved && isDrawing) {
+      if (!hasMovedRef.current && isDrawingRef.current && !havePlayedDotFillThisHoldRef.current) {
         const holdTime = performance.now() - now;
-        if (holdTime > 100) {
-          const ctx = canvas.getContext("2d");
-          if (!ctx) return;
-
-          ctx.beginPath();
-          const radius = 1 + Math.random() * 0.8;
-          ctx.arc(
-            x + (Math.random() - 0.5) * 3,
-            y + (Math.random() - 0.5) * 3,
-            radius,
-            0,
-            Math.PI * 2,
-          );
-          ctx.fillStyle = `rgba(255, 255, 255, ${0.25 + Math.random() * 0.25})`;
-          ctx.fill();
+        if (holdTime > 600) {
+          havePlayedDotFillThisHoldRef.current = true;
+          const dotFillBuf = scratchBuffersRef.current["scratch-dot-fill"];
+          if (tabVisibleRef.current && dotFillBuf && audioContextRef.current) {
+            const ac = audioContextRef.current;
+            if (ac.state === "suspended") ac.resume();
+            const src = ac.createBufferSource();
+            src.buffer = dotFillBuf;
+            const g = ac.createGain();
+            g.gain.value = 0.35;
+            src.connect(g);
+            g.connect(ac.destination);
+            src.start(0);
+          }
         }
       }
     }, 100);
@@ -395,28 +392,39 @@ export default function ChalkboardBliss() {
       | React.MouseEvent<HTMLCanvasElement>
       | React.TouchEvent<HTMLCanvasElement>,
   ): void => {
-    if (!isDrawing) return;
+    if (!isDrawingRef.current) return;
     e.preventDefault();
 
     const { x, y } = getCoordinates(e);
 
     if (!isInDrawableArea(x, y)) {
-      stopDrawing();
+      stopDrawing(e as React.PointerEvent<HTMLCanvasElement>);
       return;
     }
+
+    hasMovedThisStrokeRef.current = true;
 
     const timestamp = performance.now();
     const deltaX = x - lastPosRef.current.x;
     const deltaY = y - lastPosRef.current.y;
     const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+    if (distance > 0.05) {
+      hasMovedRef.current = true;
+      // Stop fill-interval as soon as they move so dot-fill never plays while drawing
+      if (fillIntervalRef.current) {
+        clearInterval(fillIntervalRef.current);
+        fillIntervalRef.current = null;
+      }
+    }
     const deltaTime = timestamp - lastTimeRef.current || 16;
     const speed = distance / deltaTime;
 
     if (distance > 2) {
       setHasMoved(true);
+      hasMovedRef.current = true;
     }
 
-    if (distance > 0.3) {
+    if (distance > 4) {
       clearStillnessTimer();
 
       const angle = Math.atan2(deltaY, deltaX);
@@ -437,7 +445,6 @@ export default function ChalkboardBliss() {
       const shouldUseStraight = straightScoreRef.current > 8;
       usingStraightRef.current = shouldUseStraight;
 
-      // Scratch: Tone.js brown noise + bandpass (varies with speed + curvature)
       updateScratchSound(speed, angleDiffRad);
       const canvas = canvasRef.current;
       if (!canvas) return;
@@ -453,9 +460,10 @@ export default function ChalkboardBliss() {
       ctx.lineTo(x, y);
       ctx.stroke();
 
-      // Chalk dust particles
+      // Chalk dust particles (fixed size so marks look consistent)
       if (distance > 2) {
         const particles = Math.floor(distance / 3);
+        const particleSize = 1.2;
         for (let i = 0; i < particles; i++) {
           const t = i / particles;
           const px = lastPosRef.current.x + (x - lastPosRef.current.x) * t;
@@ -463,10 +471,9 @@ export default function ChalkboardBliss() {
 
           const offsetX = (Math.random() - 0.5) * 3;
           const offsetY = (Math.random() - 0.5) * 3;
-          const size = Math.random() * 1.5;
 
           ctx.fillStyle = `rgba(255, 255, 255, ${Math.random() * 0.3})`;
-          ctx.fillRect(px + offsetX, py + offsetY, size, size);
+          ctx.fillRect(px + offsetX, py + offsetY, particleSize, particleSize);
         }
       }
 
@@ -476,24 +483,37 @@ export default function ChalkboardBliss() {
       // Stop scratch after ~80ms of no movement (pointer still down)
       clearStillnessTimer();
       stillnessTimerRef.current = window.setTimeout(() => {
-        stopToneScratch();
+        stopScratchSound();
         stillnessTimerRef.current = null;
       }, 80);
     }
   };
 
-  const stopDrawing = (): void => {
+  const stopDrawing = (e?: React.PointerEvent<HTMLCanvasElement>): void => {
+    const canvas = canvasRef.current;
+    if (canvas && e?.nativeEvent?.pointerId !== undefined && canvas.releasePointerCapture) {
+      try {
+        canvas.releasePointerCapture((e.nativeEvent as PointerEvent).pointerId);
+      } catch (_) {}
+    }
     clearStillnessTimer();
-    stopToneScratch();
+    stopScratchSound();
 
     if (fillIntervalRef.current) {
       clearInterval(fillIntervalRef.current);
       fillIntervalRef.current = null;
     }
 
+    isDrawingRef.current = false;
     if (isDrawing) {
       setIsDrawing(false);
     }
+    // Play tap on every drop (release), not only when it was a tap
+    if (!havePlayedTapThisStrokeRef.current) {
+      havePlayedTapThisStrokeRef.current = true;
+      playTapSound();
+    }
+    havePlayedStartThisStrokeRef.current = false;
     lastAngleRef.current = null;
     straightScoreRef.current = 0;
     usingStraightRef.current = false;
@@ -501,7 +521,7 @@ export default function ChalkboardBliss() {
 
   const handleMouseLeave = (): void => {
     clearStillnessTimer();
-    stopToneScratch();
+    stopScratchSound();
 
     if (fillIntervalRef.current) {
       clearInterval(fillIntervalRef.current);

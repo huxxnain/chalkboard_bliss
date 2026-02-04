@@ -30,7 +30,9 @@ export default function ChalkboardBliss() {
   const usingStraightRef = useRef<boolean>(false);
 
   const audioContextRef = useRef<AudioContext | null>(null);
-  const scratchBuffersRef = useRef<Partial<Record<ScratchKey, AudioBuffer>>>({});
+  const scratchBuffersRef = useRef<Partial<Record<ScratchKey, AudioBuffer>>>(
+    {},
+  );
   const scratchWaveSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const scratchWaveGainRef = useRef<GainNode | null>(null);
   const scratchStartedRef = useRef(false);
@@ -76,21 +78,23 @@ export default function ChalkboardBliss() {
     console.log("[sound] loading scratch WAVs...");
     Promise.all(
       SCRATCH_FILES.map((key) =>
-        decode(`/${key}.wav`, key).then((buf) => ({ key, buf }))
-      )
-    ).then((results) => {
-      const buffers: Partial<Record<ScratchKey, AudioBuffer>> = {};
-      results.forEach(({ key, buf }) => {
-        if (buf) buffers[key] = buf;
+        decode(`/${key}.wav`, key).then((buf) => ({ key, buf })),
+      ),
+    )
+      .then((results) => {
+        const buffers: Partial<Record<ScratchKey, AudioBuffer>> = {};
+        results.forEach(({ key, buf }) => {
+          if (buf) buffers[key] = buf;
+        });
+        scratchBuffersRef.current = buffers;
+        const loaded = Object.keys(buffers).length;
+        console.log(`[sound] ready: ${loaded}/${SCRATCH_FILES.length} files`);
+        setAudioReady(true);
+      })
+      .catch((err) => {
+        console.error("[sound] load failed:", err);
+        setAudioReady(true);
       });
-      scratchBuffersRef.current = buffers;
-      const loaded = Object.keys(buffers).length;
-      console.log(`[sound] ready: ${loaded}/${SCRATCH_FILES.length} files`);
-      setAudioReady(true);
-    }).catch((err) => {
-      console.error("[sound] load failed:", err);
-      setAudioReady(true);
-    });
 
     const onVisibilityChange = () => {
       tabVisibleRef.current = document.visibilityState === "visible";
@@ -464,7 +468,11 @@ export default function ChalkboardBliss() {
     playTapOnRelease = true,
   ): void => {
     const canvas = canvasRef.current;
-    if (canvas && e?.nativeEvent?.pointerId !== undefined && canvas.releasePointerCapture) {
+    if (
+      canvas &&
+      e?.nativeEvent?.pointerId !== undefined &&
+      canvas.releasePointerCapture
+    ) {
       try {
         canvas.releasePointerCapture((e.nativeEvent as PointerEvent).pointerId);
       } catch (_) {}
@@ -512,6 +520,7 @@ export default function ChalkboardBliss() {
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    //changes
 
     if (bgImageRef.current) {
       ctx.drawImage(bgImageRef.current, 0, 0, canvas.width, canvas.height);

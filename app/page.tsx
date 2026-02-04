@@ -80,7 +80,6 @@ export default function ChalkboardBliss() {
   const hasMovedRef = useRef(false);
   const havePlayedStartThisStrokeRef = useRef(false);
   const havePlayedTapThisStrokeRef = useRef(false);
-  const leftCanvasThisStrokeRef = useRef(false);
 
   const lastPosRef = useRef<Coordinates>({ x: 0, y: 0 });
   const lastTimeRef = useRef<number>(0);
@@ -241,43 +240,25 @@ export default function ChalkboardBliss() {
     };
     img.onerror = () => resizeCanvas();
 
-    const drawBg = (ctx: CanvasRenderingContext2D, w: number, h: number) => {
-      // Draw background color first
-      ctx.fillStyle = DEFAULT_BG;
-      ctx.fillRect(0, 0, w, h);
-      
-      if (bgImageRef.current) {
-        const img = bgImageRef.current;
-        
-        // Ensure image dimensions are valid
-        if (img.width > 0 && img.height > 0) {
-          // Use image smoothing for better quality
-          ctx.imageSmoothingEnabled = true;
-          ctx.imageSmoothingQuality = "high";
-          
-          // Both mobile and web: stretch to fill entire canvas
-          ctx.drawImage(img, 0, 0, w, h);
-        }
-      }
-    };
-
     const resizeCanvas = () => {
       const rect = canvas.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
+      canvas.width = rect.width * window.devicePixelRatio;
+      canvas.height = rect.height * window.devicePixelRatio;
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
 
-      // Draw background at device pixel resolution to avoid pixelation
-      ctx.save();
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      drawBg(ctx, canvas.width, canvas.height);
-      ctx.restore();
+      ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
 
-      // Scale context for drawing operations
-      ctx.scale(dpr, dpr);
+      if (bgImageRef.current) {
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(bgImageRef.current, 0, 0, canvas.width, canvas.height);
+        ctx.restore();
+      } else {
+        ctx.fillStyle = "#1a2622";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
     };
 
     resizeCanvas();
@@ -500,24 +481,21 @@ export default function ChalkboardBliss() {
     hasMovedThisStrokeRef.current = false;
     havePlayedStartThisStrokeRef.current = false;
     havePlayedTapThisStrokeRef.current = false;
-    leftCanvasThisStrokeRef.current = false;
     accumulatedDistanceRef.current = 0;
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    // Draw tap dot in buffer pixel space so size is always 2 CSS pixels (no scale/zoom variance)
     const dpr = window.devicePixelRatio || 1;
-    const radiusBuffer = 2 * dpr;
+    const radiusBuffer = 2 * dpr; // 2 CSS pixels
     const cx = x * dpr;
     const cy = y * dpr;
-
-    const alpha = opacity / 100;
-    const fillRgba = hexToRgba(strokeColor, alpha * 0.9);
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.beginPath();
     ctx.arc(cx, cy, radiusBuffer, 0, Math.PI * 2);
-    ctx.fillStyle = fillRgba;
+    ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
     ctx.fill();
     ctx.restore();
     // Start stroke path in logical space so draw() lineTo is correct
@@ -586,14 +564,15 @@ export default function ChalkboardBliss() {
       if (!ctx) return;
 
       const alpha = opacity / 100;
-      ctx.strokeStyle = hexToRgba(strokeColor, alpha * 0.9);
+      ctx.strokeStyle = hexToRgba(strokeColor, alpha * 0.85);
       ctx.lineWidth = strokeWidth;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
+
       ctx.lineTo(x, y);
       ctx.stroke();
 
-      // Chalk dust particles
+      // Chalk dust particles (fixed size so marks look consistent)
       if (distance > 2) {
         const particles = Math.floor(distance / 3);
         const particleSize = 1.2;
@@ -601,9 +580,11 @@ export default function ChalkboardBliss() {
           const t = i / particles;
           const px = lastPosRef.current.x + (x - lastPosRef.current.x) * t;
           const py = lastPosRef.current.y + (y - lastPosRef.current.y) * t;
+
           const offsetX = (Math.random() - 0.5) * 3;
           const offsetY = (Math.random() - 0.5) * 3;
-          ctx.fillStyle = hexToRgba(strokeColor, (Math.random() * 0.3 * alpha));
+
+          ctx.fillStyle = hexToRgba(strokeColor, Math.random() * 0.3 * alpha);
           ctx.fillRect(px + offsetX, py + offsetY, particleSize, particleSize);
         }
       }
@@ -642,24 +623,9 @@ export default function ChalkboardBliss() {
     if (isDrawing) {
       setIsDrawing(false);
     }
-    // Single tap only: play tap when release is over canvas, didn't move, and didn't leave first
-    const pointerStillOverCanvas =
-      canvas &&
-      e &&
-      e.clientX >= canvas.getBoundingClientRect().left &&
-      e.clientX <= canvas.getBoundingClientRect().right &&
-      e.clientY >= canvas.getBoundingClientRect().top &&
-      e.clientY <= canvas.getBoundingClientRect().bottom;
-    if (
-      playTapOnRelease &&
-      !hasMovedThisStrokeRef.current &&
-      !leftCanvasThisStrokeRef.current &&
-      pointerStillOverCanvas
-    ) {
+    // Single tap only: play tap sound on pointer up when they didn't move (not on leave)
+    if (playTapOnRelease && !hasMovedThisStrokeRef.current) {
       playTapSound();
-    }
-    if (!playTapOnRelease) {
-      leftCanvasThisStrokeRef.current = true; // so later pointer-up won't play tap
     }
     havePlayedStartThisStrokeRef.current = false;
     lastAngleRef.current = null;
@@ -686,11 +652,15 @@ export default function ChalkboardBliss() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Draw background at device pixel resolution to avoid pixelation
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    drawBackground(ctx, canvas.width, canvas.height);
+    if (bgImageRef.current) {
+      ctx.drawImage(bgImageRef.current, 0, 0, canvas.width, canvas.height);
+    } else {
+      ctx.fillStyle = "#1a2622";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
     ctx.restore();
   };
 
@@ -796,20 +766,38 @@ export default function ChalkboardBliss() {
   };
   return (
     <div className="w-full h-screen flex flex-col bg-gray-900 relative overflow-hidden">
-      {/* Canvas - full screen */}
-      <div className="flex-1 w-full h-full relative">
+      {/* Header */}
+      <div className="bg-gray-800 p-4 shadow-lg flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-white">Blackboard</h1>
+        <div className="flex items-center gap-4">
+          {!audioReady && (
+            <span className="text-yellow-400 text-sm">Loading audio...</span>
+          )}
+          <button
+            onClick={clearCanvas}
+            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
+          >
+            Clear Board
+          </button>
+        </div>
+      </div>
+
+      {/* Canvas */}
+      <div className="flex-1 p-4">
         <canvas
           ref={canvasRef}
-          className="w-full h-full touch-none"
-          style={{
-            backgroundColor: DEFAULT_BG,
-            cursor: "crosshair",
-          }}
+          className="w-full h-full rounded-lg shadow-2xl cursor-crosshair touch-none"
+          style={{ backgroundColor: "#1a2622" }}
           onPointerDown={startDrawing}
           onPointerMove={draw}
           onPointerUp={stopDrawing}
           onPointerLeave={(e) => stopDrawing(e, false)}
         />
+      </div>
+
+      {/* Footer */}
+      <div className="bg-gray-800 p-3 text-center text-sm text-gray-400">
+        By Ammar Hassan
       </div>
 
       {/* Unified Toolbar - Draggable on all screens */}

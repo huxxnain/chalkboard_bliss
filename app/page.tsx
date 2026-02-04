@@ -245,15 +245,27 @@ export default function ChalkboardBliss() {
       requestAnimationFrame(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
-        const rect = canvas.getBoundingClientRect();
-        // Ensure canvas never exceeds viewport height
-        const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
-        const actualWidth = Math.min(rect.width, window.innerWidth || document.documentElement.clientWidth);
-        const actualHeight = Math.min(rect.height, viewportHeight);
         
-        // Ensure we use the container's actual size, not exceeding viewport
-        canvas.width = actualWidth * window.devicePixelRatio;
-        canvas.height = actualHeight * window.devicePixelRatio;
+        // Get the actual visible size of the canvas element
+        const rect = canvas.getBoundingClientRect();
+        
+        // Use visual viewport if available (better for mobile), otherwise fallback
+        const viewportHeight = window.visualViewport?.height || window.innerHeight || document.documentElement.clientHeight;
+        const viewportWidth = window.visualViewport?.width || window.innerWidth || document.documentElement.clientWidth;
+        
+        // Use the actual rendered size, but ensure it doesn't exceed viewport
+        const actualWidth = Math.min(rect.width || viewportWidth, viewportWidth);
+        const actualHeight = Math.min(rect.height || viewportHeight, viewportHeight);
+        
+        // Only resize if dimensions actually changed to avoid unnecessary redraws
+        const newWidth = Math.round(actualWidth * window.devicePixelRatio);
+        const newHeight = Math.round(actualHeight * window.devicePixelRatio);
+        
+        if (canvas.width !== newWidth || canvas.height !== newHeight) {
+          canvas.width = newWidth;
+          canvas.height = newHeight;
+        }
+        
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
 
@@ -685,6 +697,30 @@ export default function ChalkboardBliss() {
   };
 
   const [isMobile, setIsMobile] = useState<boolean>(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // Ensure container height matches viewport on mobile
+  useEffect(() => {
+    const updateContainerHeight = () => {
+      const container = containerRef.current;
+      if (!container) return;
+      
+      // Use visual viewport if available (better for mobile)
+      const vh = window.visualViewport?.height || window.innerHeight;
+      container.style.height = `${vh}px`;
+    };
+    
+    updateContainerHeight();
+    window.addEventListener("resize", updateContainerHeight);
+    window.addEventListener("orientationchange", updateContainerHeight);
+    window.visualViewport?.addEventListener("resize", updateContainerHeight);
+    
+    return () => {
+      window.removeEventListener("resize", updateContainerHeight);
+      window.removeEventListener("orientationchange", updateContainerHeight);
+      window.visualViewport?.removeEventListener("resize", updateContainerHeight);
+    };
+  }, []);
 
   // Initialize toolbar position and detect mobile
   useEffect(() => {
@@ -786,27 +822,31 @@ export default function ChalkboardBliss() {
   };
   return (
     <div 
-      className="w-full h-screen flex flex-col bg-gray-900 relative" 
+      ref={containerRef}
+      className="w-full flex flex-col bg-gray-900 relative" 
       style={{ 
         height: "100dvh",
+        width: "100vw",
         position: "fixed",
         top: 0,
         left: 0,
         right: 0,
         bottom: 0,
-        overflow: "hidden"
+        overflow: "hidden",
+        touchAction: "none"
       }}
     >
       {/* Canvas */}
       <div 
         className="w-full" 
         style={{ 
-          flex: "1 1 0%",
+          flex: "1 1 auto",
           minHeight: 0,
           height: "100%",
-          maxHeight: "100dvh",
+          width: "100%",
           overflow: "hidden",
-          position: "relative"
+          position: "relative",
+          maxHeight: "100%"
         }}
       >
         <canvas
@@ -819,7 +859,8 @@ export default function ChalkboardBliss() {
             height: "100%",
             maxWidth: "100%",
             maxHeight: "100%",
-            boxSizing: "border-box"
+            boxSizing: "border-box",
+            objectFit: "contain"
           }}
           onPointerDown={startDrawing}
           onPointerMove={draw}

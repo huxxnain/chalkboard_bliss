@@ -241,32 +241,52 @@ export default function ChalkboardBliss() {
     img.onerror = () => resizeCanvas();
 
     const resizeCanvas = () => {
-      const rect = canvas.getBoundingClientRect();
-      canvas.width = rect.width * window.devicePixelRatio;
-      canvas.height = rect.height * window.devicePixelRatio;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
+      // Use requestAnimationFrame to ensure layout is complete
+      requestAnimationFrame(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const rect = canvas.getBoundingClientRect();
+        // Ensure canvas never exceeds viewport height
+        const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+        const actualWidth = Math.min(rect.width, window.innerWidth || document.documentElement.clientWidth);
+        const actualHeight = Math.min(rect.height, viewportHeight);
+        
+        // Ensure we use the container's actual size, not exceeding viewport
+        canvas.width = actualWidth * window.devicePixelRatio;
+        canvas.height = actualHeight * window.devicePixelRatio;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
 
-      ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+        ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
 
-      if (bgImageRef.current) {
-        ctx.save();
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(bgImageRef.current, 0, 0, canvas.width, canvas.height);
-        ctx.restore();
-      } else {
-        ctx.fillStyle = "#1a2622";
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-      }
+        if (bgImageRef.current) {
+          ctx.save();
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(bgImageRef.current, 0, 0, canvas.width, canvas.height);
+          ctx.restore();
+        } else {
+          ctx.fillStyle = "#1a2622";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+      });
     };
 
     resizeCanvas();
-    window.addEventListener("resize", resizeCanvas);
+    // Handle mobile viewport changes
+    const handleResize = () => {
+      resizeCanvas();
+    };
+    window.addEventListener("resize", handleResize);
+    window.addEventListener("orientationchange", handleResize);
+    // Handle mobile browser UI changes
+    window.visualViewport?.addEventListener("resize", handleResize);
     const ro = new ResizeObserver(() => resizeCanvas());
     ro.observe(canvas);
     return () => {
-      window.removeEventListener("resize", resizeCanvas);
+      window.removeEventListener("resize", handleResize);
+      window.removeEventListener("orientationchange", handleResize);
+      window.visualViewport?.removeEventListener("resize", handleResize);
       ro.disconnect();
     };
   }, [imageLoaded]);
@@ -765,39 +785,47 @@ export default function ChalkboardBliss() {
     setIsDragging(false);
   };
   return (
-    <div className="w-full h-screen flex flex-col bg-gray-900 relative overflow-hidden">
-      {/* Header */}
-      <div className="bg-gray-800 p-4 shadow-lg flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-white">Blackboard</h1>
-        <div className="flex items-center gap-4">
-          {!audioReady && (
-            <span className="text-yellow-400 text-sm">Loading audio...</span>
-          )}
-          <button
-            onClick={clearCanvas}
-            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
-          >
-            Clear Board
-          </button>
-        </div>
-      </div>
-
+    <div 
+      className="w-full h-screen flex flex-col bg-gray-900 relative" 
+      style={{ 
+        height: "100dvh",
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        overflow: "hidden"
+      }}
+    >
       {/* Canvas */}
-      <div className="flex-1 p-4">
+      <div 
+        className="w-full" 
+        style={{ 
+          flex: "1 1 0%",
+          minHeight: 0,
+          height: "100%",
+          maxHeight: "100dvh",
+          overflow: "hidden",
+          position: "relative"
+        }}
+      >
         <canvas
           ref={canvasRef}
-          className="w-full h-full rounded-lg shadow-2xl cursor-crosshair touch-none"
-          style={{ backgroundColor: "#1a2622" }}
+          className="w-full h-full cursor-crosshair touch-none"
+          style={{ 
+            backgroundColor: "#1a2622", 
+            display: "block", 
+            width: "100%", 
+            height: "100%",
+            maxWidth: "100%",
+            maxHeight: "100%",
+            boxSizing: "border-box"
+          }}
           onPointerDown={startDrawing}
           onPointerMove={draw}
           onPointerUp={stopDrawing}
           onPointerLeave={(e) => stopDrawing(e, false)}
         />
-      </div>
-
-      {/* Footer */}
-      <div className="bg-gray-800 p-3 text-center text-sm text-gray-400">
-        By Ammar Hassan
       </div>
 
       {/* Unified Toolbar - Draggable on all screens */}
@@ -873,7 +901,7 @@ export default function ChalkboardBliss() {
           <button
             type="button"
             onClick={(e) => {
-              e.stopPropagation();aa
+              e.stopPropagation();
               undo();
             }}
             disabled={undoStack.length === 0}
@@ -915,6 +943,34 @@ export default function ChalkboardBliss() {
                 strokeLinejoin="round"
                 strokeWidth={2}
                 d="M21 10h-10a8 8 0 00-8 8v2M21 10l-6 6m6-6l-6-6"
+              />
+            </svg>
+          </button>
+
+          {/* Divider */}
+          <div className="w-px h-5 md:h-7 bg-gray-200" />
+
+          {/* Clear button */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              clearCanvas();
+            }}
+            className="w-6 h-6 md:w-10 md:h-10 rounded-md flex items-center justify-center bg-red-500 text-white hover:bg-red-600 transition-colors"
+            title="Clear Board"
+          >
+            <svg
+              className="w-3.5 h-3.5 md:w-5 md:h-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
               />
             </svg>
           </button>
@@ -969,24 +1025,8 @@ export default function ChalkboardBliss() {
               />
               <p className="text-[10px] md:text-xs text-gray-500 mt-0.5">{opacity}%</p>
             </div>
-            <div className="md:hidden">
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  clearCanvas();
-                }}
-                className="w-full px-2 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-md transition-colors text-xs font-medium"
-              >
-                Clear Board
-              </button>
-            </div>
           </div>
         )}
-      </div>
-
-      {/* Footer - hidden on mobile */}
-      <div className="hidden md:block bg-gray-800 p-3 text-center text-sm text-gray-400">
-        By Ammar Hassan
       </div>
     </div>
   );

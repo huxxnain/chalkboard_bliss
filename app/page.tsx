@@ -508,11 +508,6 @@ export default function ChalkboardBliss() {
     if (isDrawing) {
       setIsDrawing(false);
     }
-    // Play tap on every drop (release), not only when it was a tap
-    if (!havePlayedTapThisStrokeRef.current) {
-      havePlayedTapThisStrokeRef.current = true;
-      playTapSound();
-    }
     havePlayedStartThisStrokeRef.current = false;
     lastAngleRef.current = null;
     straightScoreRef.current = 0;

@@ -13,7 +13,6 @@ const SCRATCH_FILES = [
   "scratch-slow",
   "scratch-fast",
   "scratch-wave",
-  "scratch-dot-fill",
 ] as const;
 type ScratchKey = (typeof SCRATCH_FILES)[number];
 
@@ -41,7 +40,6 @@ export default function ChalkboardBliss() {
   const hasMovedRef = useRef(false);
   const havePlayedStartThisStrokeRef = useRef(false);
   const havePlayedTapThisStrokeRef = useRef(false);
-  const havePlayedDotFillThisHoldRef = useRef(false);
 
   const lastPosRef = useRef<Coordinates>({ x: 0, y: 0 });
   const lastTimeRef = useRef<number>(0);
@@ -342,7 +340,6 @@ export default function ChalkboardBliss() {
     hasMovedThisStrokeRef.current = false;
     havePlayedStartThisStrokeRef.current = false;
     havePlayedTapThisStrokeRef.current = false;
-    havePlayedDotFillThisHoldRef.current = false;
     accumulatedDistanceRef.current = 0;
 
     const ctx = canvas.getContext("2d");
@@ -363,28 +360,6 @@ export default function ChalkboardBliss() {
     // Start stroke path in logical space so draw() lineTo is correct
     ctx.beginPath();
     ctx.moveTo(x, y);
-
-    // Hold: play dot-fill sound once after 600ms (not every 100ms)
-    fillIntervalRef.current = window.setInterval(() => {
-      if (!hasMovedRef.current && isDrawingRef.current && !havePlayedDotFillThisHoldRef.current) {
-        const holdTime = performance.now() - now;
-        if (holdTime > 600) {
-          havePlayedDotFillThisHoldRef.current = true;
-          const dotFillBuf = scratchBuffersRef.current["scratch-dot-fill"];
-          if (tabVisibleRef.current && dotFillBuf && audioContextRef.current) {
-            const ac = audioContextRef.current;
-            if (ac.state === "suspended") ac.resume();
-            const src = ac.createBufferSource();
-            src.buffer = dotFillBuf;
-            const g = ac.createGain();
-            g.gain.value = 0.35;
-            src.connect(g);
-            g.connect(ac.destination);
-            src.start(0);
-          }
-        }
-      }
-    }, 100);
   };
 
   const draw = (
@@ -398,7 +373,7 @@ export default function ChalkboardBliss() {
     const { x, y } = getCoordinates(e);
 
     if (!isInDrawableArea(x, y)) {
-      stopDrawing(e as React.PointerEvent<HTMLCanvasElement>);
+      stopDrawing(e as React.PointerEvent<HTMLCanvasElement>, false);
       return;
     }
 
@@ -410,11 +385,6 @@ export default function ChalkboardBliss() {
     const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
     if (distance > 0.05) {
       hasMovedRef.current = true;
-      // Stop fill-interval as soon as they move so dot-fill never plays while drawing
-      if (fillIntervalRef.current) {
-        clearInterval(fillIntervalRef.current);
-        fillIntervalRef.current = null;
-      }
     }
     const deltaTime = timestamp - lastTimeRef.current || 16;
     const speed = distance / deltaTime;
@@ -489,7 +459,10 @@ export default function ChalkboardBliss() {
     }
   };
 
-  const stopDrawing = (e?: React.PointerEvent<HTMLCanvasElement>): void => {
+  const stopDrawing = (
+    e?: React.PointerEvent<HTMLCanvasElement>,
+    playTapOnRelease = true,
+  ): void => {
     const canvas = canvasRef.current;
     if (canvas && e?.nativeEvent?.pointerId !== undefined && canvas.releasePointerCapture) {
       try {
@@ -507,6 +480,10 @@ export default function ChalkboardBliss() {
     isDrawingRef.current = false;
     if (isDrawing) {
       setIsDrawing(false);
+    }
+    // Single tap only: play tap sound on pointer up when they didn't move (not on leave)
+    if (playTapOnRelease && !hasMovedThisStrokeRef.current) {
+      playTapSound();
     }
     havePlayedStartThisStrokeRef.current = false;
     lastAngleRef.current = null;
@@ -570,7 +547,7 @@ export default function ChalkboardBliss() {
           onPointerDown={startDrawing}
           onPointerMove={draw}
           onPointerUp={stopDrawing}
-          onPointerLeave={stopDrawing}
+          onPointerLeave={(e) => stopDrawing(e, false)}
         />
       </div>
 

@@ -546,6 +546,12 @@ export default function ChalkboardBliss() {
     havePlayedStartThisStrokeRef.current = false;
     accumulatedDistanceRef.current = 0;
 
+    // Play tap sound immediately (cancel if they move in draw())
+    (canvas as any).__tapTimeout = window.setTimeout(() => {
+      if (!hasMovedThisStrokeRef.current) playTapSound();
+      (canvas as any).__tapTimeout = null;
+    }, 0);
+
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
@@ -583,6 +589,11 @@ export default function ChalkboardBliss() {
       return;
     }
 
+    const canvasEl = canvasRef.current;
+    if (canvasEl && (canvasEl as any).__tapTimeout) {
+      clearTimeout((canvasEl as any).__tapTimeout);
+      (canvasEl as any).__tapTimeout = null;
+    }
     hasMovedThisStrokeRef.current = true;
 
     const timestamp = performance.now();
@@ -692,9 +703,9 @@ export default function ChalkboardBliss() {
     if (isDrawing) {
       setIsDrawing(false);
     }
-    // Single tap only: play tap sound on pointer up when they didn't move (not on leave)
-    if (playTapOnRelease && !hasMovedThisStrokeRef.current) {
-      playTapSound();
+    if (canvas && (canvas as any).__tapTimeout) {
+      clearTimeout((canvas as any).__tapTimeout);
+      (canvas as any).__tapTimeout = null;
     }
     havePlayedStartThisStrokeRef.current = false;
     lastAngleRef.current = null;

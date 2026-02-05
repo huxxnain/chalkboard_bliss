@@ -425,15 +425,21 @@ export default function ChalkboardBliss() {
     const ctx = audioContextRef.current;
     const tapBuffer = scratchBuffersRef.current["scratch-tap"];
     if (!ctx || !tapBuffer) return;
-    if (ctx.state === "suspended") ctx.resume();
 
-    const source = ctx.createBufferSource();
-    source.buffer = tapBuffer;
-    const gain = ctx.createGain();
-    gain.gain.value = 0.6;
-    source.connect(gain);
-    gain.connect(ctx.destination);
-    source.start();
+    const doPlay = (): void => {
+      const source = ctx.createBufferSource();
+      source.buffer = tapBuffer;
+      const gain = ctx.createGain();
+      gain.gain.value = 0.6;
+      source.connect(gain);
+      gain.connect(ctx.destination);
+      source.start();
+    };
+    if (ctx.state === "suspended") {
+      ctx.resume().then(() => doPlay()).catch(() => {});
+      return;
+    }
+    doPlay();
   };
 
   // Clear the stillness timer (kept for any future use; grains need no stop)
@@ -519,6 +525,10 @@ export default function ChalkboardBliss() {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
+    // Resume AudioContext on user gesture (required on mobile for sound to keep working)
+    const audioCtx = audioContextRef.current;
+    if (audioCtx?.state === "suspended") audioCtx.resume();
+
     // Save current state for undo (before this stroke)
     saveToHistory();
 
@@ -546,12 +556,6 @@ export default function ChalkboardBliss() {
     havePlayedStartThisStrokeRef.current = false;
     accumulatedDistanceRef.current = 0;
 
-    // Play tap sound immediately (cancel if they move in draw())
-    (canvas as any).__tapTimeout = window.setTimeout(() => {
-      if (!hasMovedThisStrokeRef.current) playTapSound();
-      (canvas as any).__tapTimeout = null;
-    }, 0);
-
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
@@ -572,6 +576,9 @@ export default function ChalkboardBliss() {
     // Start stroke path in logical space so draw() lineTo is correct
     ctx.beginPath();
     ctx.moveTo(x, y);
+
+    // Play tap sound immediately (synchronous = inside user gesture so mobile works every time)
+    playTapSound();
   };
 
   const draw = (
@@ -589,11 +596,6 @@ export default function ChalkboardBliss() {
       return;
     }
 
-    const canvasEl = canvasRef.current;
-    if (canvasEl && (canvasEl as any).__tapTimeout) {
-      clearTimeout((canvasEl as any).__tapTimeout);
-      (canvasEl as any).__tapTimeout = null;
-    }
     hasMovedThisStrokeRef.current = true;
 
     const timestamp = performance.now();
@@ -702,10 +704,6 @@ export default function ChalkboardBliss() {
     isDrawingRef.current = false;
     if (isDrawing) {
       setIsDrawing(false);
-    }
-    if (canvas && (canvas as any).__tapTimeout) {
-      clearTimeout((canvas as any).__tapTimeout);
-      (canvas as any).__tapTimeout = null;
     }
     havePlayedStartThisStrokeRef.current = false;
     lastAngleRef.current = null;

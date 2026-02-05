@@ -53,24 +53,36 @@ export default function ChalkboardBliss() {
   const fillIntervalRef = useRef<number | null>(null);
 
   // Drawing controls (stroke color, width, opacity)
-  const [strokeColor, setStrokeColor] = useState<string>(STROKE_COLORS[0].value); // default white
-  const [strokeWidth, setStrokeWidth] = useState<number>(STROKE_WIDTHS[1].value);
+  const [strokeColor, setStrokeColor] = useState<string>(
+    STROKE_COLORS[0].value,
+  ); // default white
+  const [strokeWidth, setStrokeWidth] = useState<number>(
+    STROKE_WIDTHS[1].value,
+  );
   const [opacity, setOpacity] = useState<number>(100);
   const [undoStack, setUndoStack] = useState<string[]>([]);
   const undoStackRef = useRef<string[]>([]);
   const [redoStack, setRedoStack] = useState<string[]>([]);
   const redoStackRef = useRef<string[]>([]);
   const [showSettings, setShowSettings] = useState<boolean>(false);
-  const [toolbarPosition, setToolbarPosition] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [toolbarPosition, setToolbarPosition] = useState<{
+    x: number;
+    y: number;
+  }>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState<boolean>(false);
-  const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({
+    x: 0,
+    y: 0,
+  });
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   const lastAngleRef = useRef<number | null>(null);
   const straightScoreRef = useRef<number>(0);
   const usingStraightRef = useRef<boolean>(false);
 
   const audioContextRef = useRef<AudioContext | null>(null);
-  const scratchBuffersRef = useRef<Partial<Record<ScratchKey, AudioBuffer>>>({});
+  const scratchBuffersRef = useRef<Partial<Record<ScratchKey, AudioBuffer>>>(
+    {},
+  );
   const scratchWaveSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const scratchWaveGainRef = useRef<GainNode | null>(null);
   const scratchStartedRef = useRef(false);
@@ -116,21 +128,23 @@ export default function ChalkboardBliss() {
     console.log("[sound] loading scratch WAVs...");
     Promise.all(
       SCRATCH_FILES.map((key) =>
-        decode(`/${key}.wav`, key).then((buf) => ({ key, buf }))
-      )
-    ).then((results) => {
-      const buffers: Partial<Record<ScratchKey, AudioBuffer>> = {};
-      results.forEach(({ key, buf }) => {
-        if (buf) buffers[key] = buf;
+        decode(`/${key}.wav`, key).then((buf) => ({ key, buf })),
+      ),
+    )
+      .then((results) => {
+        const buffers: Partial<Record<ScratchKey, AudioBuffer>> = {};
+        results.forEach(({ key, buf }) => {
+          if (buf) buffers[key] = buf;
+        });
+        scratchBuffersRef.current = buffers;
+        const loaded = Object.keys(buffers).length;
+        console.log(`[sound] ready: ${loaded}/${SCRATCH_FILES.length} files`);
+        setAudioReady(true);
+      })
+      .catch((err) => {
+        console.error("[sound] load failed:", err);
+        setAudioReady(true);
       });
-      scratchBuffersRef.current = buffers;
-      const loaded = Object.keys(buffers).length;
-      console.log(`[sound] ready: ${loaded}/${SCRATCH_FILES.length} files`);
-      setAudioReady(true);
-    }).catch((err) => {
-      console.error("[sound] load failed:", err);
-      setAudioReady(true);
-    });
 
     const onVisibilityChange = () => {
       tabVisibleRef.current = document.visibilityState === "visible";
@@ -245,31 +259,46 @@ export default function ChalkboardBliss() {
       requestAnimationFrame(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
-        
+
         // Get the actual visible size of the canvas element
         const rect = canvas.getBoundingClientRect();
-        
+
         // Use visual viewport if available (better for mobile), otherwise fallback
-        const viewportHeight = window.visualViewport?.height || window.innerHeight || document.documentElement.clientHeight;
-        const viewportWidth = window.visualViewport?.width || window.innerWidth || document.documentElement.clientWidth;
-        
+        const viewportHeight =
+          window.visualViewport?.height ||
+          window.innerHeight ||
+          document.documentElement.clientHeight;
+        const viewportWidth =
+          window.visualViewport?.width ||
+          window.innerWidth ||
+          document.documentElement.clientWidth;
+
         // Use the actual rendered size, but ensure it doesn't exceed viewport
-        const actualWidth = Math.min(rect.width || viewportWidth, viewportWidth);
-        const actualHeight = Math.min(rect.height || viewportHeight, viewportHeight);
-        
+        const actualWidth = Math.min(
+          rect.width || viewportWidth,
+          viewportWidth,
+        );
+        const actualHeight = Math.min(
+          rect.height || viewportHeight,
+          viewportHeight,
+        );
+
         // Only resize if dimensions actually changed to avoid unnecessary redraws
-        const newWidth = Math.round(actualWidth * window.devicePixelRatio);
-        const newHeight = Math.round(actualHeight * window.devicePixelRatio);
-        
+        const dpr = window.devicePixelRatio || 1;
+        const newWidth = Math.round(actualWidth * dpr);
+        const newHeight = Math.round(actualHeight * dpr);
+
         if (canvas.width !== newWidth || canvas.height !== newHeight) {
           canvas.width = newWidth;
           canvas.height = newHeight;
         }
-        
+
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
 
-        ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+        // Reset transform and scale
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.scale(dpr, dpr);
 
         if (bgImageRef.current) {
           ctx.save();
@@ -330,13 +359,13 @@ export default function ChalkboardBliss() {
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    
+
     // Save current state to redo stack before undoing
     const currentState = canvas.toDataURL("image/png");
     const nextRedo = [...redoStackRef.current, currentState].slice(-MAX_UNDO);
     redoStackRef.current = nextRedo;
     setRedoStack(nextRedo);
-    
+
     const prev = stack[stack.length - 1];
     const img = new Image();
     img.onload = () => {
@@ -359,13 +388,13 @@ export default function ChalkboardBliss() {
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    
+
     // Save current state to undo stack before redoing
     const currentState = canvas.toDataURL("image/png");
     const nextUndo = [...undoStackRef.current, currentState].slice(-MAX_UNDO);
     undoStackRef.current = nextUndo;
     setUndoStack(nextUndo);
-    
+
     const next = stack[stack.length - 1];
     const img = new Image();
     img.onload = () => {
@@ -381,20 +410,24 @@ export default function ChalkboardBliss() {
     img.src = next;
   };
 
-  const drawBackground = (ctx: CanvasRenderingContext2D, w: number, h: number): void => {
+  const drawBackground = (
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+  ): void => {
     // Draw background color first
     ctx.fillStyle = DEFAULT_BG;
     ctx.fillRect(0, 0, w, h);
-    
+
     if (bgImageRef.current) {
       const img = bgImageRef.current;
-      
+
       // Ensure image dimensions are valid
       if (img.width > 0 && img.height > 0) {
         // Use image smoothing for better quality
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = "high";
-        
+
         // Both mobile and web: stretch to fill entire canvas
         ctx.drawImage(img, 0, 0, w, h);
       }
@@ -456,8 +489,13 @@ export default function ChalkboardBliss() {
 
     const rect = canvas.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
-    const scaleX = canvas.width / dpr / rect.width;
-    const scaleY = canvas.height / dpr / rect.height;
+
+    // Canvas buffer size is canvas.width x canvas.height (in device pixels)
+    // After ctx.scale(dpr, dpr), logical drawing size is canvas.width/dpr x canvas.height/dpr
+    // CSS size is rect.width x rect.height
+    // These should match, but we'll calculate to be safe
+    const logicalWidth = canvas.width / dpr;
+    const logicalHeight = canvas.height / dpr;
 
     let clientX: number;
     let clientY: number;
@@ -469,8 +507,16 @@ export default function ChalkboardBliss() {
       clientY = e.clientY;
     }
 
-    const x = (clientX - rect.left) * scaleX;
-    const y = (clientY - rect.top) * scaleY;
+    // Get position relative to canvas in CSS pixels
+    const relativeX = clientX - rect.left;
+    const relativeY = clientY - rect.top;
+
+    // Map CSS pixel position to logical coordinates
+    // The logical size should equal the CSS size (rect), so this should be 1:1
+    // But we calculate the ratio to handle any edge cases
+    const x = (relativeX / rect.width) * logicalWidth;
+    const y = (relativeY / rect.height) * logicalHeight;
+
     return { x, y };
   };
 
@@ -527,7 +573,9 @@ export default function ChalkboardBliss() {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.beginPath();
     ctx.arc(cx, cy, radiusBuffer, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
+    // Use selected color for tap dot
+    const alpha = opacity / 100;
+    ctx.fillStyle = hexToRgba(strokeColor, alpha * 0.7);
     ctx.fill();
     ctx.restore();
     // Start stroke path in logical space so draw() lineTo is correct
@@ -638,7 +686,11 @@ export default function ChalkboardBliss() {
     playTapOnRelease = true,
   ): void => {
     const canvas = canvasRef.current;
-    if (canvas && e?.nativeEvent?.pointerId !== undefined && canvas.releasePointerCapture) {
+    if (
+      canvas &&
+      e?.nativeEvent?.pointerId !== undefined &&
+      canvas.releasePointerCapture
+    ) {
       try {
         canvas.releasePointerCapture((e.nativeEvent as PointerEvent).pointerId);
       } catch (_) {}
@@ -704,21 +756,24 @@ export default function ChalkboardBliss() {
     const updateContainerHeight = () => {
       const container = containerRef.current;
       if (!container) return;
-      
+
       // Use visual viewport if available (better for mobile)
       const vh = window.visualViewport?.height || window.innerHeight;
       container.style.height = `${vh}px`;
     };
-    
+
     updateContainerHeight();
     window.addEventListener("resize", updateContainerHeight);
     window.addEventListener("orientationchange", updateContainerHeight);
     window.visualViewport?.addEventListener("resize", updateContainerHeight);
-    
+
     return () => {
       window.removeEventListener("resize", updateContainerHeight);
       window.removeEventListener("orientationchange", updateContainerHeight);
-      window.visualViewport?.removeEventListener("resize", updateContainerHeight);
+      window.visualViewport?.removeEventListener(
+        "resize",
+        updateContainerHeight,
+      );
     };
   }, []);
 
@@ -732,7 +787,10 @@ export default function ChalkboardBliss() {
         const toolbar = toolbarRef.current;
         if (toolbar) {
           const maxX = window.innerWidth - toolbar.offsetWidth - 10; // 10px padding from edge
-          const centeredX = Math.max(10, Math.min((window.innerWidth - toolbar.offsetWidth) / 2, maxX));
+          const centeredX = Math.max(
+            10,
+            Math.min((window.innerWidth - toolbar.offsetWidth) / 2, maxX),
+          );
           setToolbarPosition({
             x: centeredX,
             y: 10, // 10px from top
@@ -757,12 +815,12 @@ export default function ChalkboardBliss() {
     const handleGlobalPointerMove = (e: PointerEvent) => {
       if (!isDragging) return;
       e.preventDefault();
-      
+
       // Use requestAnimationFrame for smooth dragging
       if (animationFrameId) {
         cancelAnimationFrame(animationFrameId);
       }
-      
+
       animationFrameId = requestAnimationFrame(() => {
         const newX = e.clientX - dragOffset.x;
         const newY = e.clientY - dragOffset.y;
@@ -790,7 +848,9 @@ export default function ChalkboardBliss() {
     };
 
     if (isDragging) {
-      window.addEventListener("pointermove", handleGlobalPointerMove, { passive: false });
+      window.addEventListener("pointermove", handleGlobalPointerMove, {
+        passive: false,
+      });
       window.addEventListener("pointerup", handleGlobalPointerUp);
       window.addEventListener("pointercancel", handleGlobalPointerUp);
       return () => {
@@ -821,10 +881,10 @@ export default function ChalkboardBliss() {
     setIsDragging(false);
   };
   return (
-    <div 
+    <div
       ref={containerRef}
-      className="w-full flex flex-col bg-gray-900 relative" 
-      style={{ 
+      className="w-full flex flex-col bg-gray-900 relative"
+      style={{
         height: "100dvh",
         width: "100vw",
         position: "fixed",
@@ -833,34 +893,34 @@ export default function ChalkboardBliss() {
         right: 0,
         bottom: 0,
         overflow: "hidden",
-        touchAction: "none"
+        touchAction: "none",
       }}
     >
       {/* Canvas */}
-      <div 
-        className="w-full" 
-        style={{ 
+      <div
+        className="w-full"
+        style={{
           flex: "1 1 auto",
           minHeight: 0,
           height: "100%",
           width: "100%",
           overflow: "hidden",
           position: "relative",
-          maxHeight: "100%"
+          maxHeight: "100%",
         }}
       >
         <canvas
           ref={canvasRef}
           className="w-full h-full cursor-crosshair touch-none"
-          style={{ 
-            backgroundColor: "#1a2622", 
-            display: "block", 
-            width: "100%", 
+          style={{
+            backgroundColor: "#1a2622",
+            display: "block",
+            width: "100%",
             height: "100%",
             maxWidth: "100%",
             maxHeight: "100%",
             boxSizing: "border-box",
-            objectFit: "contain"
+            objectFit: "contain",
           }}
           onPointerDown={startDrawing}
           onPointerMove={draw}
@@ -1064,7 +1124,9 @@ export default function ChalkboardBliss() {
                 onClick={(e) => e.stopPropagation()}
                 className="w-full h-1.5 md:h-2 rounded-full appearance-none bg-gray-200 accent-blue-500"
               />
-              <p className="text-[10px] md:text-xs text-gray-500 mt-0.5">{opacity}%</p>
+              <p className="text-[10px] md:text-xs text-gray-500 mt-0.5">
+                {opacity}%
+              </p>
             </div>
           </div>
         )}

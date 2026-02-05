@@ -90,7 +90,6 @@ export default function ChalkboardBliss() {
   const hasMovedThisStrokeRef = useRef(false);
   const hasMovedRef = useRef(false);
   const havePlayedStartThisStrokeRef = useRef(false);
-  const havePlayedTapThisStrokeRef = useRef(false);
 
   const lastPosRef = useRef<Coordinates>({ x: 0, y: 0 });
   const lastTimeRef = useRef<number>(0);
@@ -545,22 +544,7 @@ export default function ChalkboardBliss() {
 
     hasMovedThisStrokeRef.current = false;
     havePlayedStartThisStrokeRef.current = false;
-    havePlayedTapThisStrokeRef.current = false;
     accumulatedDistanceRef.current = 0;
-
-    // Play tap sound immediately on tap (will be cancelled if draw() is called)
-    // On mobile use 0ms so sound is immediate; on desktop use small delay so draw() can cancel
-    const isTouch = typeof navigator !== "undefined" && (navigator.maxTouchPoints > 0 || "ontouchstart" in window);
-    const tapDelay = isTouch ? 0 : 5;
-    const tapTimeout = window.setTimeout(() => {
-      if (!hasMovedThisStrokeRef.current && !havePlayedTapThisStrokeRef.current) {
-        havePlayedTapThisStrokeRef.current = true;
-        playTapSound();
-      }
-      (canvas as any).__tapTimeout = null;
-    }, tapDelay);
-    
-    (canvas as any).__tapTimeout = tapTimeout;
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -599,13 +583,6 @@ export default function ChalkboardBliss() {
       return;
     }
 
-    // Cancel tap sound if movement detected
-    const canvasEl = canvasRef.current;
-    if (canvasEl && (canvasEl as any).__tapTimeout) {
-      clearTimeout((canvasEl as any).__tapTimeout);
-      (canvasEl as any).__tapTimeout = null;
-      havePlayedTapThisStrokeRef.current = true; // Prevent tap sound from playing
-    }
     hasMovedThisStrokeRef.current = true;
 
     const timestamp = performance.now();
@@ -715,12 +692,10 @@ export default function ChalkboardBliss() {
     if (isDrawing) {
       setIsDrawing(false);
     }
-    // Clear tap timeout if still pending
-    if (canvas && (canvas as any).__tapTimeout) {
-      clearTimeout((canvas as any).__tapTimeout);
-      (canvas as any).__tapTimeout = null;
+    // Single tap only: play tap sound on pointer up when they didn't move (not on leave)
+    if (playTapOnRelease && !hasMovedThisStrokeRef.current) {
+      playTapSound();
     }
-    // Don't play tap sound on release - it's already played on tap if needed
     havePlayedStartThisStrokeRef.current = false;
     lastAngleRef.current = null;
     straightScoreRef.current = 0;

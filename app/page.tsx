@@ -35,7 +35,6 @@ function hexToRgba(hex: string, alpha: number): string {
 
 const SCRATCH_FILES = [
   "scratch-tap",
-  "scratch-start",
   "scratch-slow",
   "scratch-fast",
   "scratch-wave",
@@ -181,18 +180,6 @@ export default function ChalkboardBliss() {
     const waveBuf = buffers["scratch-wave"] ?? buffers["scratch-slow"];
     if (!ctx || !waveBuf) return;
     if (ctx.state === "suspended") ctx.resume();
-
-    const startBuf = buffers["scratch-start"];
-    if (startBuf && !havePlayedStartThisStrokeRef.current) {
-      havePlayedStartThisStrokeRef.current = true;
-      const startSrc = ctx.createBufferSource();
-      startSrc.buffer = startBuf;
-      const startGain = ctx.createGain();
-      startGain.gain.value = 0.5;
-      startSrc.connect(startGain);
-      startGain.connect(ctx.destination);
-      startSrc.start(0);
-    }
 
     const waveGain = ctx.createGain();
     waveGain.gain.value = 0;
@@ -561,6 +548,18 @@ export default function ChalkboardBliss() {
     havePlayedTapThisStrokeRef.current = false;
     accumulatedDistanceRef.current = 0;
 
+    // Play tap sound immediately on tap (will be cancelled if draw() is called)
+    // Use tiny delay to allow draw() to cancel it if movement occurs
+    const tapTimeout = window.setTimeout(() => {
+      if (!hasMovedThisStrokeRef.current && !havePlayedTapThisStrokeRef.current) {
+        havePlayedTapThisStrokeRef.current = true;
+        playTapSound();
+      }
+      (canvas as any).__tapTimeout = null;
+    }, 5);
+    
+    (canvas as any).__tapTimeout = tapTimeout;
+
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
@@ -598,6 +597,13 @@ export default function ChalkboardBliss() {
       return;
     }
 
+    // Cancel tap sound if movement detected
+    const canvasEl = canvasRef.current;
+    if (canvasEl && (canvasEl as any).__tapTimeout) {
+      clearTimeout((canvasEl as any).__tapTimeout);
+      (canvasEl as any).__tapTimeout = null;
+      havePlayedTapThisStrokeRef.current = true; // Prevent tap sound from playing
+    }
     hasMovedThisStrokeRef.current = true;
 
     const timestamp = performance.now();
@@ -707,10 +713,12 @@ export default function ChalkboardBliss() {
     if (isDrawing) {
       setIsDrawing(false);
     }
-    // Single tap only: play tap sound on pointer up when they didn't move (not on leave)
-    if (playTapOnRelease && !hasMovedThisStrokeRef.current) {
-      playTapSound();
+    // Clear tap timeout if still pending
+    if (canvas && (canvas as any).__tapTimeout) {
+      clearTimeout((canvas as any).__tapTimeout);
+      (canvas as any).__tapTimeout = null;
     }
+    // Don't play tap sound on release - it's already played on tap if needed
     havePlayedStartThisStrokeRef.current = false;
     lastAngleRef.current = null;
     straightScoreRef.current = 0;

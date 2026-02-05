@@ -549,14 +549,16 @@ export default function ChalkboardBliss() {
     accumulatedDistanceRef.current = 0;
 
     // Play tap sound immediately on tap (will be cancelled if draw() is called)
-    // Use tiny delay to allow draw() to cancel it if movement occurs
+    // On mobile use 0ms so sound is immediate; on desktop use small delay so draw() can cancel
+    const isTouch = typeof navigator !== "undefined" && (navigator.maxTouchPoints > 0 || "ontouchstart" in window);
+    const tapDelay = isTouch ? 0 : 5;
     const tapTimeout = window.setTimeout(() => {
       if (!hasMovedThisStrokeRef.current && !havePlayedTapThisStrokeRef.current) {
         havePlayedTapThisStrokeRef.current = true;
         playTapSound();
       }
       (canvas as any).__tapTimeout = null;
-    }, 5);
+    }, tapDelay);
     
     (canvas as any).__tapTimeout = tapTimeout;
 
